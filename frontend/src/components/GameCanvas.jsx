@@ -1,5 +1,13 @@
 import { useEffect, useRef } from "react";
 import { useMouseAim } from "../hooks/useMouseAim.js";
+import { createParticleSystem } from "../game/particles.js";
+import {
+  playShotSound,
+  playHitSound,
+  playExplosionSound,
+  playPickupSound,
+  unlockAudio,
+} from "../game/sound.js";
 
 const TANK_SIZE = 32;
 const INTERP_SPEED = 12; // выше = быстрее "догоняет" серверную позицию
@@ -30,12 +38,22 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
 
   // сглаженные (интерполированные) позиции/углы игроков для плавного рендера
   const smoothRef = useRef(new Map());
+  const particlesRef = useRef(createParticleSystem());
+  const lastBulletPos = useRef(new Map());
+  const knownAliveState = useRef(new Map());
+  const knownPickupIds = useRef(new Set());
+  const isFirstPickupSync = useRef(true);
 
   const fieldWidth = mapInfo.field?.width || 1400;
   const fieldHeight = mapInfo.field?.height || 900;
   const walls = mapInfo.walls || [];
 
-  const mouseRef = useMouseAim(canvasRef, () => {}, sendShoot);
+  const handleShoot = () => {
+    unlockAudio();
+    sendShoot();
+  };
+
+  const mouseRef = useMouseAim(canvasRef, () => {}, handleShoot);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -68,6 +86,52 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       for (const id of Array.from(smooth.keys())) {
         if (!seenIds.has(id)) smooth.delete(id);
       }
+
+      // новые пули -> звук выстрела; исчезнувшие пули -> искра на месте последней позиции
+      const particles = particlesRef.current;
+      const seenBulletIds = new Set();
+      for (const b of current.bullets || []) {
+        seenBulletIds.add(b.id);
+        if (!lastBulletPos.current.has(b.id)) {
+          playShotSound();
+        }
+        lastBulletPos.current.set(b.id, { x: b.x, y: b.y });
+      }
+      for (const [id, pos] of Array.from(lastBulletPos.current.entries())) {
+        if (!seenBulletIds.has(id)) {
+          particles.spawnHitSpark(pos.x, pos.y);
+          playHitSound();
+          lastBulletPos.current.delete(id);
+        }
+      }
+
+      // переход alive: true -> false у любого игрока -> взрыв + звук
+      for (const p of current.players || []) {
+        const wasAlive = knownAliveState.current.get(p.id);
+        if (wasAlive === true && !p.alive) {
+          const pos = smooth.get(p.id) || p;
+          particles.spawnExplosion(pos.x, pos.y);
+          playExplosionSound();
+        }
+        knownAliveState.current.set(p.id, p.alive);
+      }
+
+      // дроп исчез (кто-то подобрал) -> звук
+      const seenPickupIds = new Set();
+      for (const pu of current.pickups || []) {
+        seenPickupIds.add(pu.id);
+      }
+      if (!isFirstPickupSync.current) {
+        for (const id of knownPickupIds.current) {
+          if (!seenPickupIds.has(id)) {
+            playPickupSound();
+          }
+        }
+      }
+      isFirstPickupSync.current = false;
+      knownPickupIds.current = seenPickupIds;
+
+      particles.update(dt);
 
       const me = current.players?.find((p) => p.id === playerId);
       const meSmooth = smooth.get(playerId);
@@ -122,6 +186,9 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         ctx.strokeStyle = "#7c2d12";
         ctx.stroke();
       }
+
+      // частицы (взрывы, искры) поверх всего
+      particles.draw(ctx);
 
       animationFrame = requestAnimationFrame(draw);
     };
