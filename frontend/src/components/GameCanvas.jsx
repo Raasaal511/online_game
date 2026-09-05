@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useMouseAim } from "../hooks/useMouseAim.js";
 
 const TANK_SIZE = 32;
+const INTERP_SPEED = 12; // выше = быстрее "догоняет" серверную позицию
 
 const PICKUP_COLORS = {
   heal: "#22c55e",
@@ -15,10 +16,20 @@ const PICKUP_LABELS = {
   damage: "DMG",
 };
 
+function lerpAngle(a, b, t) {
+  let diff = b - a;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return a + diff * t;
+}
+
 export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoot }) {
   const canvasRef = useRef(null);
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // сглаженные (интерполированные) позиции/углы игроков для плавного рендера
+  const smoothRef = useRef(new Map());
 
   const fieldWidth = mapInfo.field?.width || 1400;
   const fieldHeight = mapInfo.field?.height || 900;
@@ -31,17 +42,44 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
     const ctx = canvas.getContext("2d");
     let animationFrame;
     let lastAimSent = 0;
+    let lastTime = performance.now();
 
     const draw = (timestamp) => {
-      const current = stateRef.current;
-      const me = current.players?.find((p) => p.id === playerId);
+      const dt = Math.min(0.1, (timestamp - lastTime) / 1000);
+      lastTime = timestamp;
 
-      // отправляем угол прицеливания не чаще ~20 раз/сек
-      if (me && me.alive && timestamp - lastAimSent > 50) {
+      const current = stateRef.current;
+      const smooth = smoothRef.current;
+      const seenIds = new Set();
+
+      // обновляем сглаженные позиции к последним серверным данным
+      for (const p of current.players || []) {
+        seenIds.add(p.id);
+        const prev = smooth.get(p.id);
+        if (!prev) {
+          smooth.set(p.id, { x: p.x, y: p.y, angle: p.turret_angle });
+        } else {
+          const t = Math.min(1, INTERP_SPEED * dt);
+          prev.x += (p.x - prev.x) * t;
+          prev.y += (p.y - prev.y) * t;
+          prev.angle = lerpAngle(prev.angle, p.turret_angle, t);
+        }
+      }
+      for (const id of Array.from(smooth.keys())) {
+        if (!seenIds.has(id)) smooth.delete(id);
+      }
+
+      const me = current.players?.find((p) => p.id === playerId);
+      const meSmooth = smooth.get(playerId);
+
+      // отправляем угол прицеливания не чаще ~20 раз/сек, считая от сглаженной позиции танка
+      if (me && me.alive && meSmooth && timestamp - lastAimSent > 50) {
         lastAimSent = timestamp;
-        const dx = mouseRef.current.x - me.x;
-        const dy = mouseRef.current.y - me.y;
-        sendAim(Math.atan2(dy, dx));
+        const dx = mouseRef.current.x - meSmooth.x;
+        const dy = mouseRef.current.y - meSmooth.y;
+        if (Math.hypot(dx, dy) > 1) {
+          sendAim(Math.atan2(dy, dx));
+        }
       }
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -66,10 +104,11 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         ctx.fillText(PICKUP_LABELS[pu.kind] || "", pu.x, pu.y + 3);
       }
 
-      // танки
+      // танки (рисуем по сглаженным позициям для плавности)
       for (const p of current.players || []) {
         if (!p.alive) continue;
-        drawTank(ctx, p, p.id === playerId);
+        const s = smooth.get(p.id) || p;
+        drawTank(ctx, { ...p, x: s.x, y: s.y, turret_angle: s.angle }, p.id === playerId);
       }
 
       // пули

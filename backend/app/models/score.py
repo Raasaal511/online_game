@@ -10,5 +10,6 @@ class Score(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     nickname = Column(String(32), nullable=False)
+    kills = Column(Integer, nullable=False)
     lifetime_seconds = Column(Float, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

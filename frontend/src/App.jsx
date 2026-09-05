@@ -93,6 +93,7 @@ export default function App() {
         <div style={overlayStyles.backdrop}>
           <div style={overlayStyles.box}>
             <h2>Твой танк уничтожен</h2>
+            <p>Убийств за этот заход: {deathInfo.kills}</p>
             <p>Прожил {deathInfo.lifetime_seconds.toFixed(1)} секунд</p>
             {deathInfo.is_new_record && <p style={{ color: "#facc15" }}>🎉 Новый рекорд топ-3!</p>}
             <p>Респавн через {deathInfo.respawn_in}с...</p>

@@ -146,7 +146,8 @@ class GameRoom:
 
     async def _handle_death(self, player: Player) -> None:
         lifetime = player.lifetime()
-        is_new_record = self._save_score(player.nickname, lifetime)
+        kills = player.kills
+        is_new_record = self._save_score(player.nickname, kills, lifetime)
         leaderboard = self.get_leaderboard()
         ws = self.connections.get(player.id)
         if ws is not None:
@@ -155,6 +156,7 @@ class GameRoom:
                     {
                         "type": "death",
                         "lifetime_seconds": lifetime,
+                        "kills": kills,
                         "is_new_record": is_new_record,
                         "leaderboard": leaderboard,
                         "respawn_in": RESPAWN_DELAY,
@@ -169,11 +171,21 @@ class GameRoom:
             del self._pending_respawns[pid]
             self._respawn(pid)
 
+    def _pick_spawn_point(self) -> tuple[float, float]:
+        occupied = [
+            (p.x, p.y) for p in self.players.values() if p.alive
+        ]
+        free_points = [
+            pt for pt in SPAWN_POINTS
+            if all(math.hypot(pt[0] - ox, pt[1] - oy) > 80 for ox, oy in occupied)
+        ]
+        return random.choice(free_points or SPAWN_POINTS)
+
     def _respawn(self, player_id: str) -> None:
         player = self.players.get(player_id)
         if player is None:
             return
-        x, y = random.choice(SPAWN_POINTS)
+        x, y = self._pick_spawn_point()
         player.x, player.y = x, y
         player.dir_x, player.dir_y = 0.0, 0.0
         player.hp = player.max_hp
@@ -183,6 +195,7 @@ class GameRoom:
         player.armor_until = 0.0
         player.damage_until = 0.0
         player.damage = 20
+        player.kills = 0
 
     def _spawn_pickups(self, elapsed: float) -> None:
         if len(self.pickups) >= PICKUP_MAX_COUNT:
@@ -243,18 +256,18 @@ class GameRoom:
         bullet = Bullet.new(player.id, muzzle_x, muzzle_y, player.turret_angle, player.damage)
         self.bullets[bullet.id] = bullet
 
-    def _save_score(self, nickname: str, lifetime: float) -> bool:
+    def _save_score(self, nickname: str, kills: int, lifetime: float) -> bool:
         db: Session = SessionLocal()
         try:
-            db.add(Score(nickname=nickname, lifetime_seconds=lifetime))
+            db.add(Score(nickname=nickname, kills=kills, lifetime_seconds=lifetime))
             db.commit()
             top = (
                 db.query(Score)
-                .order_by(Score.lifetime_seconds.desc())
+                .order_by(Score.kills.desc(), Score.lifetime_seconds.desc())
                 .limit(TOP_N)
                 .all()
             )
-            return any(s.nickname == nickname and s.lifetime_seconds == lifetime for s in top)
+            return any(s.nickname == nickname and s.kills == kills for s in top)
         finally:
             db.close()
 
@@ -271,12 +284,12 @@ class GameRoom:
         try:
             top = (
                 db.query(Score)
-                .order_by(Score.lifetime_seconds.desc())
+                .order_by(Score.kills.desc(), Score.lifetime_seconds.desc())
                 .limit(TOP_N)
                 .all()
             )
             return [
-                {"nickname": s.nickname, "lifetime_seconds": s.lifetime_seconds}
+                {"nickname": s.nickname, "kills": s.kills, "lifetime_seconds": s.lifetime_seconds}
                 for s in top
             ]
         finally:
@@ -334,7 +347,7 @@ class GameRoom:
         async with self._lock:
             if self.is_full():
                 return None
-            x, y = random.choice(SPAWN_POINTS)
+            x, y = self._pick_spawn_point()
             player = Player.new(nickname[:16] or "Player", x, y)
             self.players[player.id] = player
             self.connections[player.id] = ws

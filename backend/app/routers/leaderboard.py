@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api", tags=["leaderboard"])
 def get_leaderboard(db: Session = Depends(get_db)):
     return (
         db.query(Score)
-        .order_by(Score.lifetime_seconds.desc())
+        .order_by(Score.kills.desc(), Score.lifetime_seconds.desc())
         .limit(3)
         .all()
     )

@@ -7,5 +7,6 @@ class ScoreOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     nickname: str
+    kills: int
     lifetime_seconds: float
     created_at: datetime
