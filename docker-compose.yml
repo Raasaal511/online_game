@@ -4,8 +4,9 @@ services:
     restart: unless-stopped
     environment:
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173}
+      - DB_DIR=/app/data
     volumes:
-      - backend_data:/app
+      - backend_data:/app/data
     ports:
       - "8000:8000"
 

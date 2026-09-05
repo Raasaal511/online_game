@@ -1,7 +1,11 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DATABASE_URL = "sqlite:///./game.db"
+import os
+
+DB_DIR = os.getenv("DB_DIR", ".")
+os.makedirs(DB_DIR, exist_ok=True)
+DATABASE_URL = f"sqlite:///{DB_DIR}/game.db"
 
 engine = create_engine(
     DATABASE_URL, connect_args={"check_same_thread": False}
