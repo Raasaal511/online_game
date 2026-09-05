@@ -1,43 +1,83 @@
 import { useEffect, useRef } from "react";
+import { useMouseAim } from "../hooks/useMouseAim.js";
 
-const PLAYER_SIZE = 24;
+const TANK_SIZE = 32;
 
-export default function GameCanvas({ state, playerId }) {
+const PICKUP_COLORS = {
+  heal: "#22c55e",
+  armor: "#38bdf8",
+  damage: "#f97316",
+};
+
+const PICKUP_LABELS = {
+  heal: "+HP",
+  armor: "ARM",
+  damage: "DMG",
+};
+
+export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoot }) {
   const canvasRef = useRef(null);
   const stateRef = useRef(state);
   stateRef.current = state;
 
-  const fieldWidth = state.field?.width || 900;
-  const fieldHeight = state.field?.height || 600;
+  const fieldWidth = mapInfo.field?.width || 1400;
+  const fieldHeight = mapInfo.field?.height || 900;
+  const walls = mapInfo.walls || [];
+
+  const mouseRef = useMouseAim(canvasRef, () => {}, sendShoot);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     let animationFrame;
+    let lastAimSent = 0;
 
-    const draw = () => {
+    const draw = (timestamp) => {
       const current = stateRef.current;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const me = current.players?.find((p) => p.id === playerId);
 
-      ctx.fillStyle = "#0f172a";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // игроки
-      for (const p of current.players || []) {
-        if (!p.alive) continue;
-        ctx.fillStyle = p.id === playerId ? "#22c55e" : "#38bdf8";
-        ctx.fillRect(p.x - PLAYER_SIZE / 2, p.y - PLAYER_SIZE / 2, PLAYER_SIZE, PLAYER_SIZE);
-
-        ctx.fillStyle = "white";
-        ctx.font = "11px sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText(p.nickname, p.x, p.y - PLAYER_SIZE / 2 - 6);
+      // отправляем угол прицеливания не чаще ~20 раз/сек
+      if (me && me.alive && timestamp - lastAimSent > 50) {
+        lastAimSent = timestamp;
+        const dx = mouseRef.current.x - me.x;
+        const dy = mouseRef.current.y - me.y;
+        sendAim(Math.atan2(dy, dx));
       }
 
-      // снаряды
-      for (const proj of current.projectiles || []) {
-        ctx.fillStyle = "#ef4444";
-        ctx.fillRect(proj.x - proj.size / 2, proj.y - proj.size / 2, proj.size, proj.size);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#1e293b";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // стены
+      ctx.fillStyle = "#475569";
+      for (const w of walls) {
+        ctx.fillRect(w.x, w.y, w.width, w.height);
+      }
+
+      // дропы
+      for (const pu of current.pickups || []) {
+        ctx.fillStyle = PICKUP_COLORS[pu.kind] || "#fff";
+        ctx.beginPath();
+        ctx.arc(pu.x, pu.y, 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "white";
+        ctx.font = "9px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(PICKUP_LABELS[pu.kind] || "", pu.x, pu.y + 3);
+      }
+
+      // танки
+      for (const p of current.players || []) {
+        if (!p.alive) continue;
+        drawTank(ctx, p, p.id === playerId);
+      }
+
+      // пули
+      ctx.fillStyle = "#facc15";
+      for (const b of current.bullets || []) {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+        ctx.fill();
       }
 
       animationFrame = requestAnimationFrame(draw);
@@ -45,14 +85,60 @@ export default function GameCanvas({ state, playerId }) {
 
     animationFrame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(animationFrame);
-  }, [playerId]);
+  }, [playerId, walls, sendAim]);
 
   return (
     <canvas
       ref={canvasRef}
       width={fieldWidth}
       height={fieldHeight}
-      style={{ display: "block", margin: "0 auto", border: "2px solid #334155" }}
+      style={{
+        display: "block",
+        margin: "0 auto",
+        border: "2px solid #334155",
+        cursor: "crosshair",
+        maxWidth: "100%",
+        height: "auto",
+      }}
     />
   );
+}
+
+function drawTank(ctx, player, isMe) {
+  const { x, y, turret_angle: angle, hp, max_hp: maxHp, has_armor: hasArmor } = player;
+
+  // корпус
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = isMe ? "#22c55e" : "#38bdf8";
+  ctx.fillRect(-TANK_SIZE / 2, -TANK_SIZE / 2, TANK_SIZE, TANK_SIZE);
+
+  if (hasArmor) {
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(-TANK_SIZE / 2 - 2, -TANK_SIZE / 2 - 2, TANK_SIZE + 4, TANK_SIZE + 4);
+  }
+
+  // башня + ствол
+  ctx.rotate(angle);
+  ctx.fillStyle = "#0f172a";
+  ctx.beginPath();
+  ctx.arc(0, 0, TANK_SIZE / 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillRect(0, -3, TANK_SIZE / 2 + 8, 6);
+  ctx.restore();
+
+  // ник и HP-бар
+  ctx.fillStyle = "white";
+  ctx.font = "11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(player.nickname, x, y - TANK_SIZE / 2 - 14);
+
+  const barWidth = TANK_SIZE;
+  const barHeight = 5;
+  const hpRatio = Math.max(0, hp / maxHp);
+  ctx.fillStyle = "#334155";
+  ctx.fillRect(x - barWidth / 2, y - TANK_SIZE / 2 - 10, barWidth, barHeight);
+  ctx.fillStyle = hpRatio > 0.3 ? "#22c55e" : "#ef4444";
+  ctx.fillRect(x - barWidth / 2, y - TANK_SIZE / 2 - 10, barWidth * hpRatio, barHeight);
 }
