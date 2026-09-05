@@ -2,12 +2,14 @@ import { useEffect, useRef } from "react";
 
 export function useMouseAim(canvasRef, onAim, onShoot) {
   const mouseRef = useRef({ x: 0, y: 0 });
+  const onShootRef = useRef(onShoot);
+  onShootRef.current = onShoot;
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const handleMouseMove = (e) => {
+    const updateMouse = (e) => {
       const rect = canvas.getBoundingClientRect();
       const scaleX = canvas.width / rect.width;
       const scaleY = canvas.height / rect.height;
@@ -17,19 +19,30 @@ export function useMouseAim(canvasRef, onAim, onShoot) {
       };
     };
 
-    const handleMouseDown = (e) => {
+    const handlePointerMove = (e) => {
+      updateMouse(e);
+    };
+
+    const handlePointerDown = (e) => {
+      updateMouse(e);
       if (e.button === 0) {
-        onShoot();
+        onShootRef.current();
       }
     };
 
-    canvas.addEventListener("mousemove", handleMouseMove);
-    canvas.addEventListener("mousedown", handleMouseDown);
-    return () => {
-      canvas.removeEventListener("mousemove", handleMouseMove);
-      canvas.removeEventListener("mousedown", handleMouseDown);
+    const handleContextMenu = (e) => {
+      e.preventDefault();
     };
-  }, [canvasRef, onShoot]);
+
+    canvas.addEventListener("pointermove", handlePointerMove);
+    canvas.addEventListener("pointerdown", handlePointerDown);
+    canvas.addEventListener("contextmenu", handleContextMenu);
+    return () => {
+      canvas.removeEventListener("pointermove", handlePointerMove);
+      canvas.removeEventListener("pointerdown", handlePointerDown);
+      canvas.removeEventListener("contextmenu", handleContextMenu);
+    };
+  }, [canvasRef]);
 
   return mouseRef;
 }

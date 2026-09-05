@@ -111,12 +111,16 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         drawTank(ctx, { ...p, x: s.x, y: s.y, turret_angle: s.angle }, p.id === playerId);
       }
 
-      // пули
-      ctx.fillStyle = "#facc15";
+      // пули (рисуем крупнее хитбокса, чтобы были заметны на масштабированном canvas)
       for (const b of current.bullets || []) {
+        const r = Math.max(b.size, 8);
         ctx.beginPath();
-        ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+        ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = "#facc15";
         ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#7c2d12";
+        ctx.stroke();
       }
 
       animationFrame = requestAnimationFrame(draw);

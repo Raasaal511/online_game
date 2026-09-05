@@ -8,7 +8,7 @@ TANK_SPEED = 160.0  # px/sec
 TANK_MAX_HP = 100
 
 BULLET_SPEED = 420.0
-BULLET_SIZE = 6
+BULLET_SIZE = 10
 BULLET_DAMAGE = 20
 FIRE_COOLDOWN = 1.0  # сек между выстрелами
 
