@@ -15,7 +15,7 @@
 **Технологический стек:**
 - **Backend:** FastAPI (Python 3.11+), WebSocket для realtime-синхронизации, SQLite + SQLAlchemy для хранения рекордов.
 - **Frontend:** React (Vite), Canvas API для рендера игры, нативный WebSocket-клиент.
-- **Деплой:** VPS на reg.ru, Docker Compose (backend + frontend/nginx), Caddy/Nginx как reverse-proxy с HTTPS (Let's Encrypt).
+- **Деплой:** VPS на reg.ru, Docker Compose (backend + frontend/nginx), доступ напрямую по IP-адресу сервера, без домена и без HTTPS (HTTP-only).
 
 ---
 
@@ -157,16 +157,16 @@ web_game/
 - [ ] `docker-compose.yml`: сервисы `backend`, `frontend`, volume для `game.db`.
 - [ ] `.env` для конфигурации (порт, CORS origin, tick rate).
 
-### Milestone 9 — Деплой на reg.ru
+### Milestone 9 — Деплой на reg.ru (без домена, по IP)
 - [ ] Аренда/настройка VPS на reg.ru (Ubuntu 22.04 LTS рекомендуется).
 - [ ] Установка Docker + Docker Compose на сервере.
-- [ ] Настройка домена (A-запись на IP VPS) через панель reg.ru.
-- [ ] Установка Caddy или Nginx + Certbot для HTTPS (Let's Encrypt).
-- [ ] Reverse proxy: `/` → frontend (nginx static), `/api/*` и `/ws/*` → backend (uvicorn).
-- [ ] Проброс WebSocket через reverse-proxy (обязательно указать `Upgrade`/`Connection` заголовки для WS).
+- [ ] Открыть на сервере/в файрволе порты `80` (frontend) и `8000` (backend REST+WS).
+- [ ] Клонировать репозиторий на сервер (по HTTPS, см. раздел 6a — без домена SSH-ключ GitHub не нужен для клонирования).
+- [ ] Настроить `.env`: `CORS_ORIGINS=http://ВАШ_IP`, `VITE_API_URL=http://ВАШ_IP:8000`, `VITE_WS_URL=ws://ВАШ_IP:8000/ws/game`.
 - [ ] Деплой через `docker compose up -d --build`.
-- [ ] Настройка автозапуска (systemd unit или `restart: unless-stopped` в compose).
+- [ ] Настройка автозапуска (`restart: unless-stopped` уже в compose — достаточно, чтобы контейнеры поднимались после реролла VPS).
 - [ ] Бэкап `game.db` (простой cron-скрипт копирования файла).
+- [ ] (Опционально, позже) Если появится домен — добавить Caddy/Nginx reverse-proxy с Let's Encrypt для HTTPS.
 
 ### Milestone 10 — Пост-релиз
 - [ ] Мониторинг: логи uvicorn, базовый healthcheck endpoint `/health`.
@@ -248,29 +248,60 @@ def collides(a, b):
 
 ---
 
-## 6. Деплой на reg.ru — пошагово
+## 6. Деплой на reg.ru — пошагово (без домена, по IP)
 
-1. **Заказать VPS** в панели reg.ru (минимально: 1-2 vCPU, 2 GB RAM, Ubuntu 22.04).
+1. **Заказать VPS** в панели reg.ru (минимально: 1-2 vCPU, 2 GB RAM, Ubuntu 22.04). Записать выданный IP-адрес.
 2. **Подключиться по SSH**: `ssh root@<server_ip>`.
 3. **Установить Docker**:
    ```bash
    curl -fsSL https://get.docker.com | sh
-   apt install docker-compose-plugin -y
+   apt install docker-compose-plugin git -y
    ```
-4. **Привязать домен**: в панели reg.ru → DNS-записи → добавить A-запись `@`/`www` → IP сервера.
-5. **Склонировать проект** на сервер (git clone или scp).
-6. **Настроить `.env`** (домен, CORS_ORIGINS, TICK_RATE).
-7. **Поднять Caddy** (проще всего для авто-HTTPS) с Caddyfile:
+4. **Склонировать проект на сервер по HTTPS** (см. раздел 6a — SSH-ключ GitHub на сервере не нужен):
+   ```bash
+   git clone https://github.com/<user>/<repo>.git
+   cd <repo>
    ```
-   yourdomain.ru {
-       reverse_proxy /api/* backend:8000
-       reverse_proxy /ws/*  backend:8000
-       reverse_proxy /*     frontend:80
-   }
+5. **Настроить `.env`** на основе `.env.example`, подставив реальный IP сервера. Порт **80 отдаётся системному nginx/apache на VPS by default**, поэтому фронтенд запускается на **8080**:
+   ```bash
+   cp .env.example .env
+   # заменить ВАШ_IP на реальный IP, например 109.497.xxx.xxx
+   CORS_ORIGINS=http://109.497.xxx.xxx:8080
+   VITE_API_URL=http://109.497.xxx.xxx:8000
+   VITE_WS_URL=ws://109.497.xxx.xxx:8000/ws/game
    ```
-8. **Запустить**: `docker compose up -d --build`.
-9. **Проверить**: открыть `https://yourdomain.ru`, протестировать WS-подключение (DevTools → Network → WS).
-10. **Настроить бэкап БД**: cron-задача `cp game.db backups/game-$(date +%F).db` раз в сутки.
+6. **Открыть порты в файрволе** (если включён ufw/облачный firewall reg.ru):
+   ```bash
+   ufw allow 8080/tcp
+   ufw allow 8000/tcp
+   ```
+7. **Запустить**:
+   ```bash
+   docker compose --env-file .env up -d --build
+   ```
+8. **Проверить**: открыть в браузере `http://<server_ip>:8080` — должна открыться игра; API — `http://<server_ip>:8000/health`.
+9. **Настроить бэкап БД**: cron-задача `cp game.db backups/game-$(date +%F).db` раз в сутки.
+
+**Если порт 80 всё же нужен освободить** (например, чтобы открывать игру без указания порта): проверить, что его занимает — `sudo lsof -i :80` или `sudo ss -tlnp | grep :80` — это обычно `nginx` или `apache2`, предустановленные образом reg.ru. Остановить и отключить автозапуск: `sudo systemctl stop nginx && sudo systemctl disable nginx` (или `apache2` вместо `nginx`), затем в `docker-compose.yml` поменять `"8080:80"` обратно на `"80:80"`.
+
+**Важно про HTTP без домена:** браузер не потребует HTTPS для обычных запросов и `ws://` (не `wss://`) — всё будет работать по обычному HTTP. Единственное ограничение — некоторые браузерные API (геолокация, доступ к камере и т.п.) требуют HTTPS, но для этой игры они не используются, так что ограничений на геймплей нет.
+
+### 6a. Клонирование репозитория на сервере без SSH-ключа
+
+Ошибка `git@github.com: Permission denied (publickey)` возникает, когда на сервере нет SSH-ключа, привязанного к GitHub-аккаунту. Так как домен и сложная инфраструктура не нужны, проще всего клонировать по HTTPS:
+
+```bash
+git clone https://github.com/<user>/<repo>.git
+```
+
+- Если репозиторий **публичный** — это сработает сразу, без авторизации.
+- Если репозиторий **приватный** — Git запросит логин и пароль; вместо пароля нужно использовать **Personal Access Token** (GitHub Settings → Developer settings → Personal access tokens → Generate new token, права `repo`). Токен вводится вместо пароля один раз, либо можно сохранить его в URL на время сессии:
+  ```bash
+  git clone https://<username>:<TOKEN>@github.com/<user>/<repo>.git
+  ```
+  (после клонирования лучше убрать токен из `git remote -v`/`.git/config`, чтобы он не остался в файле в открытом виде: `git remote set-url origin https://github.com/<user>/<repo>.git`).
+
+Настраивать SSH-ключ на сервере имеет смысл только если планируется регулярно `git pull`/`push` с этого VPS в приватный репозиторий — тогда: `ssh-keygen -t ed25519`, вывести `cat ~/.ssh/id_ed25519.pub` и добавить в GitHub → Settings → SSH and GPG keys.
 
 ---
 
@@ -278,7 +309,7 @@ def collides(a, b):
 
 | Риск                                        | Решение                                                       |
 |---------------------------------------------|----------------------------------------------------------------|
-| WebSocket не проходит через reverse-proxy   | Явно прописать `Upgrade`/`Connection` заголовки в Nginx/Caddy  |
+| Порт 8000 закрыт облачным файрволом reg.ru  | Открыть порт 80 и 8000 в панели управления VPS (Security Groups/Firewall), не только в ufw на самой машине |
 | Рассинхронизация клиента и сервера          | Сервер — единственный источник истины, клиент только рендерит |
 | Много одновременных игроков нагружают сервер| Ограничить tick rate (20-30/сек), оптимизировать broadcast (delta вместо full state) |
 | SQLite блокировки при записи               | Один writer-процесс (uvicorn без множества workers для WS-части) или переход на PostgreSQL при росте нагрузки |

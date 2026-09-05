@@ -24,6 +24,9 @@ SPAWN_INTERVAL_START = 2.5  # сек между спавнами в начале
 SPAWN_INTERVAL_MIN = 0.6
 SPAWN_RAMP_PER_SEC = 0.01  # насколько быстрее спавн со временем
 
+MAX_PROJECTILES = 10
+PROJECTILES_PER_PLAYER = 2  # лимит также растёт с числом живых игроков, но не выше MAX_PROJECTILES
+
 TOP_N = 3
 
 
@@ -55,11 +58,22 @@ class GameRoom:
     def _tick(self) -> None:
         elapsed = self._elapsed()
 
-        # спавн снарядов
+        # спавн снарядов (лимит зависит от числа живых игроков, но не больше MAX_PROJECTILES)
         self._spawn_interval = max(
             SPAWN_INTERVAL_MIN, SPAWN_INTERVAL_START - elapsed * SPAWN_RAMP_PER_SEC
         )
-        if elapsed - self._last_spawn >= self._spawn_interval:
+        live_players = sum(1 for p in self.players.values() if p.alive) or 1
+        projectile_limit = min(MAX_PROJECTILES, live_players * PROJECTILES_PER_PLAYER)
+
+        # если игроков стало меньше, лишние снаряды постепенно убираем
+        while len(self.projectiles) > projectile_limit:
+            oldest_id = next(iter(self.projectiles))
+            del self.projectiles[oldest_id]
+
+        if (
+            elapsed - self._last_spawn >= self._spawn_interval
+            and len(self.projectiles) < projectile_limit
+        ):
             self._last_spawn = elapsed
             self._spawn_projectile(elapsed)
 
