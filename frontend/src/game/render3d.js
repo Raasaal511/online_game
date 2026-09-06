@@ -5,6 +5,9 @@
 import { drawIcon } from "./icons.js";
 
 const TILT = 0.72; // вертикальное сжатие пола/объектов, имитирует наклон камеры
+// синхронизировано с WALL_MAX_HP на сервере (backend/app/game/entities.py) —
+// используется только для прогрессии визуальных трещин по стадиям урона
+const WALL_MAX_HP = 5;
 // направление света (нормализовано) — грани, обращённые к источнику, светлее;
 // грани, обращённые от него, темнее. Свет "сверху-слева", как классическое
 // студийное освещение — согласуется с тем, что верхняя грань всегда светлее.
@@ -36,6 +39,21 @@ function shadeColor(hex, factor) {
   }
   const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
   return `rgb(${clamp(r)}, ${clamp(g)}, ${clamp(b)})`;
+}
+
+// линейно смешивает два hex-цвета: weight=0 -> чистый a, weight=1 -> чистый b.
+// Используется для золотистого перехода корпуса танка с ростом уровня.
+function mixColor(a, b, weight) {
+  const pa = parseInt(a.slice(1), 16);
+  const pb = parseInt(b.slice(1), 16);
+  const ar = (pa >> 16) & 0xff, ag = (pa >> 8) & 0xff, ab = pa & 0xff;
+  const br = (pb >> 16) & 0xff, bg = (pb >> 8) & 0xff, bb = pb & 0xff;
+  const r = Math.round(ar + (br - ar) * weight);
+  const g = Math.round(ag + (bg - ag) * weight);
+  const bl = Math.round(ab + (bb - ab) * weight);
+  // hex, не rgb(...) — downstream shadeColor() парсит только "#rrggbb"
+  const toHex = (v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(bl)}`;
 }
 
 // яркость грани с нормалью (nx, ny) относительно направления света: 1 —
@@ -135,20 +153,13 @@ export function drawWall3D(ctx, wall) {
   const depth = Math.min(20, wall.height, wall.width) * 0.5 + 8;
   const { x, y, width, height } = wall;
 
-  // растянутая мягкая тень на полу (радиальный градиент вместо жёсткого
-  // прямоугольника — читается более объёмно и естественно)
+  // тень — прямоугольник по форме объекта, смещённый в направлении от света,
+  // а не овал: овал на длинной узкой стене растягивался в бесформенное
+  // пятно поперёк всей длины секции вместо компактной тени под её контуром
+  const shadowDx = SHADOW_DIR.x * depth * 1.4;
+  const shadowDy = SHADOW_DIR.y * depth * 1.4 * TILT;
   ctx.fillStyle = "rgba(0,0,0,0.4)";
-  ctx.beginPath();
-  ctx.ellipse(
-    x + width / 2 + 5,
-    y + height + depth * 0.25,
-    width / 2 + 6,
-    depth * 0.5 + 3,
-    0,
-    0,
-    Math.PI * 2
-  );
-  ctx.fill();
+  ctx.fillRect(x + shadowDx, y + shadowDy, width, height);
 
   // боковые грани, обращённые к камере: южная (нормаль вниз) и восточная
   // (нормаль вправо) — каждая освещена по-своему в зависимости от того,
@@ -200,39 +211,66 @@ export function drawWall3D(ctx, wall) {
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, topY + 0.5, width - 1, height - 1);
 
-  // повреждение: стена на последнем HP получает видимые трещины —
-  // сигнал игроку, что ещё один удар её разрушит
-  if (wall.destructible && wall.hp === 1) {
-    ctx.strokeStyle = "rgba(15, 23, 42, 0.6)";
-    ctx.lineWidth = 1.5;
+  // повреждение растёт постепенно с числом попаданий (стена держит несколько
+  // ударов, не только последний) — трещины множатся, а не появляются разом
+  // на последнем HP, иначе с более живучей стеной прогресс был бы не виден
+  if (wall.destructible && wall.hp != null && wall.hp <= WALL_MAX_HP - 1) {
+    const damageStage = WALL_MAX_HP - wall.hp; // 1, 2, 3...
     const cx = x + width / 2;
     const cy = topY + height / 2;
+    ctx.strokeStyle = "rgba(15, 23, 42, 0.6)";
+    ctx.lineWidth = 1.5;
+
     ctx.beginPath();
     ctx.moveTo(cx - width * 0.3, topY);
     ctx.lineTo(cx - width * 0.05, cy - height * 0.15);
     ctx.lineTo(cx + width * 0.15, cy + height * 0.1);
     ctx.lineTo(cx + width * 0.3, topY + height);
-    ctx.moveTo(cx - width * 0.1, cy - height * 0.1);
-    ctx.lineTo(cx - width * 0.35, cy + height * 0.25);
     ctx.stroke();
+
+    if (damageStage >= 2) {
+      ctx.beginPath();
+      ctx.moveTo(cx - width * 0.1, cy - height * 0.1);
+      ctx.lineTo(cx - width * 0.35, cy + height * 0.25);
+      ctx.stroke();
+    }
+    if (damageStage >= 3) {
+      ctx.beginPath();
+      ctx.moveTo(cx + width * 0.1, topY + height * 0.1);
+      ctx.lineTo(cx + width * 0.32, cy + height * 0.05);
+      ctx.stroke();
+    }
+    if (damageStage >= 4) {
+      // на последнем HP — явные тёмные сколы по краям, не только трещины
+      ctx.fillStyle = "rgba(15, 23, 42, 0.5)";
+      ctx.beginPath();
+      ctx.arc(x + width * 0.15, topY + height * 0.2, Math.min(width, height) * 0.12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x + width * 0.8, topY + height * 0.75, Math.min(width, height) * 0.1, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
 function drawRamp3D(ctx, wall) {
-  // пандус: приподнятая площадка со скошенным (не вертикальным) передним
-  // краем — визуально читается как "въезд наверх", а не сплошная стена
+  // пандус: раньше сливался со стеной (тот же тусклый оливковый оттенок,
+  // почти не выделялся на фоне соседней секции) — теперь контрастная
+  // предупреждающая жёлто-чёрная разметка (как настоящий дорожный пандус) +
+  // явная стрелка направления въезда, чтобы объект читался однозначно
   const { x, y, width, height } = wall;
   const depth = 10;
   const topY = y - depth * TILT;
+  const isHorizontal = width >= height;
 
-  ctx.fillStyle = "rgba(0,0,0,0.25)";
-  ctx.beginPath();
-  ctx.ellipse(x + width / 2, y + height + 4, width / 2 + 4, 6, 0, 0, Math.PI * 2);
-  ctx.fill();
+  // тень по форме площадки (прямоугольник), а не овал
+  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  ctx.fillRect(x - 3, y + 2, width + 6, 8);
 
-  // скошенный въезд (трапеция вместо прямоугольника)
-  const inset = width * 0.25;
-  ctx.fillStyle = "#5a5d4f";
+  // скошенный въезд (трапеция вместо прямоугольника) — приподнят выше, чем
+  // раньше, чтобы объём "выступа" читался лучше на пологой камере
+  const inset = width * 0.22;
+  ctx.fillStyle = "#8a7a3d";
   ctx.beginPath();
   ctx.moveTo(x, y + height);
   ctx.lineTo(x + width, y + height);
@@ -241,44 +279,139 @@ function drawRamp3D(ctx, wall) {
   ctx.closePath();
   ctx.fill();
 
-  ctx.strokeStyle = "rgba(226, 232, 240, 0.4)";
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(15, 23, 42, 0.7)";
+  ctx.lineWidth = 2;
   ctx.stroke();
 
-  // диагональная штриховка — читается как "рифлёная поверхность для въезда"
-  ctx.strokeStyle = "rgba(15, 23, 42, 0.25)";
-  ctx.lineWidth = 1;
-  for (let i = 1; i < 4; i++) {
-    const fx = x + (width * i) / 4;
+  // предупреждающая диагональная жёлто-чёрная штриховка вдоль всей площадки —
+  // однозначно читается как "функциональный объект", а не декоративный кусок стены
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x, y + height);
+  ctx.lineTo(x + width, y + height);
+  ctx.lineTo(x + width - inset, topY);
+  ctx.lineTo(x + inset, topY);
+  ctx.closePath();
+  ctx.clip();
+  ctx.strokeStyle = "rgba(15, 23, 42, 0.75)";
+  ctx.lineWidth = 6;
+  const stripeStep = 14;
+  const span = width + height;
+  for (let i = -span; i < span; i += stripeStep) {
     ctx.beginPath();
-    ctx.moveTo(fx, y + height);
-    ctx.lineTo(fx - inset * (i / 4), topY);
+    ctx.moveTo(x + i, y + height + 10);
+    ctx.lineTo(x + i + height + 10, topY - 10);
     ctx.stroke();
   }
+  ctx.restore();
+
+  // стрелка въезда по центру площадки — направление, куда танк заезжает наверх
+  ctx.save();
+  ctx.translate(x + width / 2, (y + height + topY) / 2);
+  if (!isHorizontal) ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
+  ctx.beginPath();
+  ctx.moveTo(-10, -6);
+  ctx.lineTo(4, -6);
+  ctx.lineTo(4, -11);
+  ctx.lineTo(14, 0);
+  ctx.lineTo(4, 11);
+  ctx.lineTo(4, 6);
+  ctx.lineTo(-10, 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  ctx.strokeStyle = "rgba(15, 23, 42, 0.85)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, y + height);
+  ctx.lineTo(x + width, y + height);
+  ctx.lineTo(x + width - inset, topY);
+  ctx.lineTo(x + inset, topY);
+  ctx.closePath();
+  ctx.stroke();
+}
+
+// псевдослучайный, но детерминированный генератор — те же обломки на том же
+// месте каждый кадр (не должны "мерцать"/переставляться), без Math.random()
+function _rubbleRand(seed) {
+  const s = Math.sin(seed * 12.9898) * 43758.5453;
+  return s - Math.floor(s);
 }
 
 function drawWallRuins3D(ctx, wall) {
-  // стена разрушена: низкая куча обломков вместо полноразмерной преграды —
-  // читается как "здесь можно проехать", но остаётся визуальным ориентиром
+  // стена разрушена: рассыпавшаяся куча каменной кладки вместо полноразмерной
+  // преграды — читается как "здесь можно проехать", но остаётся заметным
+  // ориентиром на карте. Полный редизайн (было: 5 одинаковых плоских кружков
+  // без освещения, тень одним растянутым эллипсом на всю длину стены):
+  // теперь общая плоская подложка обвала + крупные и мелкие камни вперемешку,
+  // каждый с направленным освещением (как обычные стены) и своей тенью.
   const { x, y, width, height } = wall;
   const cx = x + width / 2;
   const cy = y + height / 2;
+  const area = width * height;
 
-  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  // общая подложка — раскрошенная земля/щебень чуть шире исходной стены,
+  // объединяет отдельные камни в один читаемый объект разрушения
+  ctx.fillStyle = "rgba(0,0,0,0.28)";
   ctx.beginPath();
-  ctx.ellipse(cx, cy + 3, width / 2, height / 2, 0, 0, Math.PI * 2);
+  ctx.ellipse(cx, cy + 4, width / 2 + 6, height / 2 + 6, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = "#3a3d33";
-  const rubbleCount = 5;
+  ctx.fillStyle = "rgba(58, 61, 51, 0.55)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, width / 2 + 2, height / 2 + 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // плотность обломков растёт с площадью секции — короткая баррикада и
+  // длинный отрезок крепостной стены выглядят пропорционально разрушенными
+  const rubbleCount = Math.min(14, Math.max(6, Math.round(area / 900)));
+  const southLight = faceLighting(0, 1);
+  const topLight = faceLighting(0, -1);
+
   for (let i = 0; i < rubbleCount; i++) {
-    const rx = x + ((i * 37) % width);
-    const ry = y + ((i * 53) % Math.max(height, 1));
-    const size = 4 + (i % 3) * 2;
+    const rx = x + _rubbleRand(i * 3.1 + wall.id?.length ?? 0) * width;
+    const ry = y + _rubbleRand(i * 7.7 + 1) * height;
+    // размеры вперемешку: часть камней заметно крупнее — читается как настоящий обвал
+    const big = i % 4 === 0;
+    const size = big ? 9 + _rubbleRand(i) * 5 : 4 + _rubbleRand(i) * 4;
+
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
     ctx.beginPath();
-    ctx.arc(rx, ry, size, 0, Math.PI * 2);
+    ctx.ellipse(rx, ry + size * 0.35, size * 1.2, size * 0.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // каждый камень — грубый многоугольник, а не идеальный круг, плюс
+    // направленное освещение верх/низ грани (согласовано с обычными стенами)
+    const sides = 5 + Math.floor(_rubbleRand(i + 40) * 3);
+    const rotOffset = _rubbleRand(i + 80) * Math.PI * 2;
+    ctx.fillStyle = shadeColor("#3a3d33", 0.12 + topLight * 0.2);
+    ctx.beginPath();
+    for (let s = 0; s < sides; s++) {
+      const a = rotOffset + (s / sides) * Math.PI * 2;
+      const jitter = 0.75 + _rubbleRand(i * 5 + s) * 0.5;
+      const px = rx + Math.cos(a) * size * jitter;
+      const py = ry + Math.sin(a) * size * jitter * 0.85 - size * 0.3;
+      if (s === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = shadeColor("#242620", southLight * 0.15);
+    ctx.beginPath();
+    ctx.ellipse(rx, ry - size * 0.1, size * 0.7, size * 0.35, 0, 0, Math.PI * 2);
     ctx.fill();
   }
+
+  // тонкая пыльная дымка над обвалом — усиливает ощущение "недавнего разрушения"
+  const dustGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(width, height) * 0.6);
+  dustGrad.addColorStop(0, "rgba(148, 163, 184, 0.1)");
+  dustGrad.addColorStop(1, "rgba(148, 163, 184, 0)");
+  ctx.fillStyle = dustGrad;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, width / 2 + 10, height / 2 + 10, 0, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 export function drawPickup3D(ctx, pickup, colors, t) {
@@ -371,13 +504,36 @@ const BULLET_PALETTE = {
   rocket: { glow: "194, 65, 40", core: ["#f3b988", "#c24228", "#5c1a10"], stroke: "#2a0d08" },
 };
 
-export function drawBullet3D(ctx, bullet) {
+export function drawBullet3D(ctx, bullet, t = 0) {
   const z = 10;
   const kind = bullet.kind || "cannon";
   const palette = BULLET_PALETTE[kind] || BULLET_PALETTE.cannon;
   const isMinigun = kind === "minigun";
   const isRocket = kind === "rocket";
-  const r = isMinigun ? Math.max(bullet.size, 5) : Math.max(bullet.size, 8);
+  const isCannon = kind === "cannon";
+  // пушечное ядро заметно крупнее и весомее — должно читаться как серьёзная
+  // угроза, а не декоративная точка; пулемёт остаётся мелким намеренно
+  const r = isMinigun ? Math.max(bullet.size, 5) : isCannon ? Math.max(bullet.size, 11) : Math.max(bullet.size, 8);
+
+  const angle = Math.atan2(bullet.vy ?? 0, bullet.vx ?? 1);
+
+  // хвостовой мазок скорости вдоль направления полёта — читается как "летит
+  // быстро и опасно", особенно заметно у утяжелённого пушечного снаряда
+  if (isCannon || isRocket) {
+    const trailLen = isCannon ? r * 3.2 : r * 2.2;
+    const tailX = bullet.x - Math.cos(angle) * trailLen;
+    const tailY = bullet.y - Math.sin(angle) * trailLen;
+    const streak = ctx.createLinearGradient(bullet.x, bullet.y, tailX, tailY);
+    streak.addColorStop(0, `rgba(${palette.glow}, 0.55)`);
+    streak.addColorStop(1, `rgba(${palette.glow}, 0)`);
+    ctx.strokeStyle = streak;
+    ctx.lineWidth = r * 0.9;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(bullet.x, bullet.y);
+    ctx.lineTo(tailX, tailY);
+    ctx.stroke();
+  }
 
   // дымный след ракеты — рисуется первым, чтобы оказаться под самим снарядом
   if (isRocket) {
@@ -398,9 +554,12 @@ export function drawBullet3D(ctx, bullet) {
   const py = screenY(bullet.y, z);
 
   // свечение (слабее у пулемётных пуль — они мелкие и частые, сильный glow
-  // на каждой создавал бы "кашу" на экране при высокой скорострельности)
-  const glowMult = isMinigun ? 1.4 : 2.2;
-  const glowAlpha = isMinigun ? 0.35 : 0.55;
+  // на каждой создавал бы "кашу" на экране при высокой скорострельности);
+  // пушечное ядро дополнительно пульсирует — раскалённый снаряд, а не
+  // статичная светящаяся точка, должно тревожить сильнее при приближении
+  const cannonPulse = isCannon ? 0.85 + 0.15 * Math.sin(t * 30 + bullet.x * 0.1) : 1;
+  const glowMult = (isMinigun ? 1.4 : isCannon ? 2.7 : 2.2) * cannonPulse;
+  const glowAlpha = (isMinigun ? 0.35 : isCannon ? 0.7 : 0.55) * cannonPulse;
   const glow = ctx.createRadialGradient(bullet.x, py, 0, bullet.x, py, r * glowMult);
   glow.addColorStop(0, `rgba(${palette.glow}, ${glowAlpha})`);
   glow.addColorStop(1, `rgba(${palette.glow}, 0)`);
@@ -417,9 +576,19 @@ export function drawBullet3D(ctx, bullet) {
   ctx.arc(bullet.x, py, r, 0, Math.PI * 2);
   ctx.fillStyle = grad;
   ctx.fill();
-  ctx.lineWidth = isMinigun ? 1 : 1.5;
+  ctx.lineWidth = isMinigun ? 1 : isCannon ? 2 : 1.5;
   ctx.strokeStyle = palette.stroke;
   ctx.stroke();
+
+  // тонкое пульсирующее кольцо вокруг пушечного ядра — усиливает ощущение
+  // "раскалённого, готового снести" снаряда при приближении к игроку
+  if (isCannon) {
+    ctx.strokeStyle = `rgba(255, 220, 170, ${0.5 * cannonPulse})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(bullet.x, py, r + 2.5, 0, Math.PI * 2);
+    ctx.stroke();
+  }
 }
 
 export function drawFlameCone3D(ctx, player, t) {
@@ -491,20 +660,81 @@ export function drawMuzzleFlash3D(ctx, x, y, angle, strength) {
   ctx.restore();
 }
 
+// синхронизировано с MINIBOSS_LASER_WIDTH/MINIBOSS_LASER_RANGE на сервере
+const LASER_WIDTH = 18.0;
+const LASER_RANGE = 900.0;
+
+export function drawLaserCharge3D(ctx, x, y, angle, progress) {
+  // телеграф лазера мини-босса: тонкая прицельная линия, растущая по
+  // толщине/яркости по мере приближения выстрела — даёт игрокам реальное
+  // окно, чтобы уйти с линии огня до того, как ударит полный луч
+  const len = LASER_RANGE;
+  const width = 2 + progress * (LASER_WIDTH - 2);
+  const alpha = 0.35 + progress * 0.5;
+  const pulse = 0.6 + 0.4 * Math.sin(progress * 40);
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+
+  const grad = ctx.createLinearGradient(0, 0, len, 0);
+  grad.addColorStop(0, `rgba(239, 68, 68, ${alpha * pulse})`);
+  grad.addColorStop(1, `rgba(239, 68, 68, 0)`);
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(len, 0);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+export function drawLaserShot3D(ctx, shot, age) {
+  // выстрел лазера — короткая, но очень яркая полная вспышка на всю длину
+  // луча, затухает за долю секунды (мгновенное попадание, не снаряд)
+  if (age >= 1) return;
+  const alpha = 1 - age;
+  const { x, y, angle, range } = shot;
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+
+  ctx.strokeStyle = `rgba(255, 241, 199, ${0.95 * alpha})`;
+  ctx.lineWidth = LASER_WIDTH * (1 - age * 0.5);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(range, 0);
+  ctx.stroke();
+
+  ctx.strokeStyle = `rgba(239, 68, 68, ${0.6 * alpha})`;
+  ctx.lineWidth = LASER_WIDTH * 2 * (1 - age * 0.5);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(range, 0);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
 export function drawBomb3D(ctx, bomb, t) {
   const pulse = 0.5 + 0.5 * Math.sin(t * 12);
   const ringRadius = bomb.radius * (0.3 + bomb.fuse_progress * 0.7);
+  // артиллерия мини-босса — отдельный пурпурный цвет, чтобы не путать с
+  // обычной фоновой бомбой (та же телеграф-механика, но другая угроза)
+  const rgb = bomb.is_artillery ? "168, 85, 247" : "239, 68, 68";
 
   // предупреждающий круг на полу — растёт по мере приближения взрыва
-  ctx.strokeStyle = `rgba(239, 68, 68, ${0.4 + pulse * 0.4})`;
-  ctx.lineWidth = 3;
+  ctx.strokeStyle = `rgba(${rgb}, ${0.4 + pulse * 0.4})`;
+  ctx.lineWidth = bomb.is_artillery ? 4 : 3;
   ctx.setLineDash([10, 6]);
   ctx.beginPath();
   ctx.arc(bomb.x, bomb.y, ringRadius, 0, Math.PI * 2);
   ctx.stroke();
   ctx.setLineDash([]);
 
-  ctx.fillStyle = `rgba(239, 68, 68, ${0.08 + bomb.fuse_progress * 0.12})`;
+  ctx.fillStyle = `rgba(${rgb}, ${0.08 + bomb.fuse_progress * 0.12})`;
   ctx.beginPath();
   ctx.arc(bomb.x, bomb.y, ringRadius, 0, Math.PI * 2);
   ctx.fill();
@@ -513,9 +743,9 @@ export function drawBomb3D(ctx, bomb, t) {
   const blinkSpeed = 4 + bomb.fuse_progress * 12;
   const blink = Math.sin(t * blinkSpeed) > 0;
   if (blink) {
-    ctx.fillStyle = "#fecaca";
+    ctx.fillStyle = bomb.is_artillery ? "#e9d5ff" : "#fecaca";
     ctx.beginPath();
-    ctx.arc(bomb.x, bomb.y - 10, 5, 0, Math.PI * 2);
+    ctx.arc(bomb.x, bomb.y - 10, bomb.is_artillery ? 7 : 5, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -598,6 +828,59 @@ export function drawExplosion3D(ctx, explosion, age) {
   ctx.stroke();
 }
 
+export function drawNukeExplosion3D(ctx, explosion, age) {
+  // взрыв ядерки — отдельный от обычного drawExplosion3D эффект "гриба":
+  // расширяющаяся ударная волна по земле + поднимающееся облако-шапка со
+  // смещением вверх (через screenY), заметно масштабнее и дольше живёт,
+  // чем взрыв ракеты/бомбы — раньше рисовался тем же кругом, что и обычная
+  // граната, и не читался как нечто катастрофическое
+  if (age >= 1) return;
+  const alpha = 1 - age;
+  const groundRadius = explosion.radius * (0.35 + age * 0.85);
+
+  // ударная волна по земле — тёмно-серая пыльная, не огненная (реалистичнее для "ядерки")
+  const groundGrad = ctx.createRadialGradient(explosion.x, explosion.y, 0, explosion.x, explosion.y, groundRadius);
+  groundGrad.addColorStop(0, `rgba(255, 241, 199, ${0.85 * alpha})`);
+  groundGrad.addColorStop(0.3, `rgba(217, 140, 60, ${0.55 * alpha})`);
+  groundGrad.addColorStop(0.6, `rgba(120, 113, 108, ${0.45 * alpha})`);
+  groundGrad.addColorStop(1, "rgba(120, 113, 108, 0)");
+  ctx.fillStyle = groundGrad;
+  ctx.beginPath();
+  ctx.arc(explosion.x, explosion.y, groundRadius, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = `rgba(255, 255, 255, ${0.6 * alpha})`;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(explosion.x, explosion.y, groundRadius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // столб/ножка гриба — поднимается быстрее, чем расширяется шапка
+  const stemHeight = 40 + age * 140;
+  const stemWidth = explosion.radius * (0.12 + age * 0.05);
+  const stemTopY = screenY(explosion.y, stemHeight);
+  const stemGrad = ctx.createLinearGradient(explosion.x, explosion.y, explosion.x, stemTopY);
+  stemGrad.addColorStop(0, `rgba(120, 113, 108, ${0.7 * alpha})`);
+  stemGrad.addColorStop(1, `rgba(87, 83, 78, ${0.5 * alpha})`);
+  ctx.fillStyle = stemGrad;
+  ctx.beginPath();
+  ctx.ellipse(explosion.x, (explosion.y + stemTopY) / 2, stemWidth, Math.abs(explosion.y - stemTopY) / 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // шапка гриба — округлое облако над столбом, растёт с задержкой и медленнее ножки
+  const capProgress = Math.max(0, age - 0.15) / 0.85;
+  const capRadius = explosion.radius * (0.28 + capProgress * 0.5);
+  const capY = screenY(explosion.y, stemHeight + capRadius * 0.5);
+  const capGrad = ctx.createRadialGradient(explosion.x, capY, 0, explosion.x, capY, capRadius);
+  capGrad.addColorStop(0, `rgba(168, 162, 158, ${0.75 * alpha})`);
+  capGrad.addColorStop(0.6, `rgba(120, 113, 108, ${0.55 * alpha})`);
+  capGrad.addColorStop(1, "rgba(120, 113, 108, 0)");
+  ctx.fillStyle = capGrad;
+  ctx.beginPath();
+  ctx.ellipse(explosion.x, capY, capRadius, capRadius * 0.75, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 export function drawWallBreakEffect3D(ctx, effect, age) {
   // age: 0..1, вспышка пыли/трещин в момент разрушения стены (отдельно от
   // drawExplosion3D — это не взрыв оружия, а обвал каменной кладки)
@@ -636,7 +919,7 @@ export function drawWallHitSpark3D(ctx, hit, age) {
   ctx.fill();
 }
 
-export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
+export function drawTank3D(ctx, player, isMe, baseTankSize, t, kickback = 0, accelBoost = 0, moveAngle = null) {
   const {
     turret_angle: angle,
     hp,
@@ -649,15 +932,28 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
     is_miniboss: isMiniboss,
     weapon,
   } = player;
-  const bodyZ = isMiniboss ? 16 : 10; // мини-босс визуально выше обычных танков
+  const level = player.level ?? 1;
+  // чем выше уровень — тем крупнее и золотистее танк (визуальный статус
+  // прокачки, помимо цифры в бейдже): растёт плавно, не рывками
+  const levelProgress = isMiniboss ? 0 : (level - 1) / 4; // 0..1 (LEVEL_MAX=5)
+  // мини-босс втрое крупнее обычного танка — синхронизировано с MINIBOSS_SIZE
+  // на сервере (96 vs 32), должен читаться как настоящий босс, а не чуть
+  // подросший игрок
+  const tankSize = isMiniboss ? baseTankSize * 3 : baseTankSize * (1 + levelProgress * 0.22);
+  const bodyZ = isMiniboss ? 22 : 10; // мини-босс визуально заметно выше обычных танков
   const half = tankSize / 2;
 
   // при выстреле весь корпус слегка "приседает" назад вдоль ствола — раньше
   // дёргался только сам ствол, что читалось слабо; это короткая, быстро
   // затухающая добавка к позиции, не влияющая на реальные игровые координаты
   const bodyRecoil = kickback * 2.5;
-  const x = player.x - Math.cos(angle) * bodyRecoil;
-  const y = player.y - Math.sin(angle) * bodyRecoil;
+  // при резком разгоне корпус аналогично "приседает" назад по направлению
+  // движения (не башни) — тяжёлая машина клюёт носом при старте с места,
+  // читается как реальное ускорение, а не мгновенный набор скорости
+  const accelDir = moveAngle ?? angle;
+  const accelPush = accelBoost * tankSize * 0.18;
+  const x = player.x - Math.cos(angle) * bodyRecoil - Math.cos(accelDir) * accelPush;
+  const y = player.y - Math.sin(angle) * bodyRecoil - Math.sin(accelDir) * accelPush;
 
   // неуязвимость после респавна — мигающая полупрозрачность, чтобы было
   // видно кто ещё не может получать урон
@@ -665,11 +961,12 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   ctx.save();
   ctx.globalAlpha = spawnAlpha;
 
-  // тень корпуса на полу (крупнее у мини-босса, пропорционально размеру)
+  // тень корпуса на полу — квадратная под форму корпуса (не овал), смещена
+  // в направлении от света; крупнее у мини-босса пропорционально размеру
+  const shadowDx = SHADOW_DIR.x * half * 0.4;
+  const shadowDy = SHADOW_DIR.y * half * 0.4 * TILT;
   ctx.fillStyle = "rgba(0,0,0,0.4)";
-  ctx.beginPath();
-  ctx.ellipse(x, y + half * 0.4, tankSize * 0.6, tankSize * 0.28, 0, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.fillRect(x - half + shadowDx, y - half + shadowDy, tankSize, tankSize);
 
   let bodyColor, bodyColorDark, bodyColorLight;
   if (isMiniboss) {
@@ -684,6 +981,14 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
     bodyColor = "#38bdf8";
     bodyColorDark = "#0369a1";
     bodyColorLight = "#7dd3fc";
+  }
+
+  // с ростом уровня фракционный цвет постепенно вытесняется золотом —
+  // видно издалека, кто прокачан, даже без чтения цифры уровня
+  if (levelProgress > 0) {
+    bodyColor = mixColor(bodyColor, "#facc15", levelProgress * 0.75);
+    bodyColorDark = mixColor(bodyColorDark, "#92400e", levelProgress * 0.75);
+    bodyColorLight = mixColor(bodyColorLight, "#fef08a", levelProgress * 0.75);
   }
 
   // угрожающее пульсирующее свечение вокруг мини-босса — виден издалека
@@ -716,6 +1021,22 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   ctx.save();
   ctx.translate(x, 0);
 
+  // гусеницы по бокам корпуса — раньше корпус был просто плоским квадратом,
+  // без них силуэт не читался как танк. Рисуются под корпусом, чуть выступая
+  // по бокам, с сегментами-траками для ощущения механической детали.
+  const trackWidth = tankSize * 0.16;
+  const trackInset = half * 0.08;
+  ctx.fillStyle = "#1c1f18";
+  ctx.fillRect(-half - trackWidth + trackInset, topY - half - 2, trackWidth, tankSize + 4);
+  ctx.fillRect(half - trackInset, topY - half - 2, trackWidth, tankSize + 4);
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  const trackSegments = 5;
+  for (let i = 0; i < trackSegments; i++) {
+    const segY = topY - half + (i + 0.5) * (tankSize / trackSegments);
+    ctx.fillRect(-half - trackWidth + trackInset + 1, segY - 1.5, trackWidth - 2, 3);
+    ctx.fillRect(half - trackInset + 1, segY - 1.5, trackWidth - 2, 3);
+  }
+
   // боковые грани корпуса, направленно освещённые — южная (низ) и восточная
   // (правый бок), каждая своим оттенком по faceLighting, вместо одного
   // плоского bodyColorDark на всю боковину
@@ -734,13 +1055,32 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   ctx.fillStyle = shadeColor(bodyColorDark, bodyEastLight * 0.2);
   ctx.fillRect(half - 3, topY - half, 3, tankSize);
 
-  // верхняя грань корпуса — светлее с той стороны, что обращена к источнику
+  // верхняя грань корпуса — скошенные передние углы (не идеальный квадрат)
+  // читаются как броневой лист, а не примитивная коробка; светлее с той
+  // стороны, что обращена к источнику света
   const bodyTopLight = faceLighting(0, -1);
   const bodyGrad = ctx.createLinearGradient(-half, topY - half, half, topY + half);
   bodyGrad.addColorStop(0, shadeColor(bodyColorLight, bodyTopLight * 0.2));
   bodyGrad.addColorStop(1, shadeColor(bodyColor, bodyTopLight * 0.15));
   ctx.fillStyle = bodyGrad;
-  ctx.fillRect(-half, topY - half, tankSize, tankSize);
+  const chamfer = tankSize * 0.22;
+  ctx.beginPath();
+  ctx.moveTo(-half + chamfer, topY - half);
+  ctx.lineTo(half - chamfer, topY - half);
+  ctx.lineTo(half, topY - half + chamfer);
+  ctx.lineTo(half, topY + half);
+  ctx.lineTo(-half, topY + half);
+  ctx.lineTo(-half, topY - half + chamfer);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = shadeColor(bodyColorDark, 0.1);
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // центральная броневая накладка — панель поверх корпуса вдоль продольной
+  // оси, добавляет силуэту деталь без нагромождения лишней геометрии
+  ctx.fillStyle = shadeColor(bodyColorDark, 0.15);
+  ctx.fillRect(-half * 0.35, topY - half + 3, half * 0.7, tankSize - 6);
 
   if (hasSlow) {
     // ледяной оттенок поверх корпуса — читается как "заторможен"
@@ -817,15 +1157,28 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
     ctx.restore();
   }
 
-  // ник и HP-бар — billboard, не наклоняются вместе с полом
-  const level = player.level ?? 1;
-  const nameLabel = isMiniboss ? `☠ ${player.nickname}` : (level > 1 ? `Lv.${level} ${player.nickname}` : player.nickname);
+  // ник и HP-бар — billboard, не наклоняются вместе с полом. Уровень раньше
+  // был вписан прямо в текст ника ("Lv.3 Rasl") и сливался с ним визуально —
+  // теперь отдельная маленькая золотистая строка НАД ником, всегда видна
+  // отдельно от имени начиная со 2 уровня.
+  const nameLabel = isMiniboss ? `☠ ${player.nickname}` : player.nickname;
+  const nameY = topY - half - 14;
+
+  if (!isMiniboss && level > 1) {
+    ctx.fillStyle = "#fde047";
+    ctx.font = "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.shadowColor = "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = 3;
+    ctx.fillText(`★ Уровень ${level}`, x, nameY - 12);
+  }
+
   ctx.fillStyle = isMiniboss ? "#fecaca" : "white";
   ctx.font = isMiniboss ? "bold 13px sans-serif" : "11px sans-serif";
   ctx.textAlign = "center";
   ctx.shadowColor = "rgba(0,0,0,0.8)";
   ctx.shadowBlur = 3;
-  ctx.fillText(nameLabel, x, topY - half - 14);
+  ctx.fillText(nameLabel, x, nameY);
 
   const barWidth = isMiniboss ? tankSize * 1.6 : tankSize;
   const barHeight = isMiniboss ? 7 : 5;

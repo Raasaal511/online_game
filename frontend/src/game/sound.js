@@ -180,6 +180,25 @@ export function playMinibossSalvoSound() {
   }
 }
 
+export function playMinibossLaserChargeSound() {
+  // нарастающий тон во время прицеливания — предупреждает на слух ещё до
+  // визуального телеграфа, что сейчас ударит лазер
+  try {
+    playTone({ freq: 200, freqEnd: 900, duration: 0.85, type: "sine", volume: 0.1 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playMinibossLaserFireSound() {
+  try {
+    playTone({ freq: 1200, freqEnd: 200, duration: 0.3, type: "sawtooth", volume: 0.28 });
+    playNoise({ duration: 0.25, volume: 0.2, filterFreq: 3000 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 export function playMinibossSpawnSound() {
   try {
     playTone({ freq: 60, freqEnd: 40, duration: 0.6, type: "sawtooth", volume: 0.22 });

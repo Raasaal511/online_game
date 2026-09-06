@@ -15,6 +15,9 @@ import {
   drawNukeWarning3D,
   drawCastShadow,
   drawExplosion3D,
+  drawNukeExplosion3D,
+  drawLaserCharge3D,
+  drawLaserShot3D,
   drawWallBreakEffect3D,
   drawWallHitSpark3D,
   drawParticles3D,
@@ -32,6 +35,8 @@ import {
   playLevelUpSound,
   playMinibossSpawnSound,
   playMinibossSalvoSound,
+  playMinibossLaserChargeSound,
+  playMinibossLaserFireSound,
   playWallHitSound,
   playWallBreakSound,
   unlockAudio,
@@ -41,8 +46,11 @@ const WALL_BREAK_LIFETIME = 0.5;
 const WALL_HIT_LIFETIME = 0.2;
 
 const TANK_SIZE = 32;
+const MINIBOSS_TANK_SIZE = 96; // синхронизировано с MINIBOSS_SIZE на сервере — втрое крупнее обычного танка
 const INTERP_SPEED = 12; // выше = быстрее "догоняет" серверную позицию
 const EXPLOSION_LIFETIME = 0.6; // сек, длительность визуального взрыва бомбы/ракеты
+const NUKE_EXPLOSION_LIFETIME = 2.2; // сек — гриб растёт и держится заметно дольше обычного взрыва
+const LASER_SHOT_LIFETIME = 0.25; // сек — вспышка лазерного выстрела мини-босса, короткая и яркая
 
 const PICKUP_COLORS = {
   heal: "#22c55e",
@@ -88,6 +96,9 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
   const wallBreaksRef = useRef([]); // {x, y, age} — эффект разрушения стены
   const wallHitsRef = useRef([]); // {x, y, age} — искра при попадании без разрушения
   const kickbackRef = useRef(new Map()); // playerId -> 0..1, отдача ствола
+  const prevMotionRef = useRef(new Map()); // playerId -> {x, y, speed} прошлого кадра, для эффекта разгона
+  const laserChargingRef = useRef(new Set()); // playerId'ы, у которых лазер уже заряжался в прошлом кадре
+  const laserShotsRef = useRef([]); // {x, y, angle, range, age} — вспышки фактических выстрелов лазера
   const hadNukeRef = useRef(false); // была ли ядерка активна в прошлом кадре (для звука появления)
   const onGameEventRef = useRef(onGameEvent);
   onGameEventRef.current = onGameEvent;
@@ -260,17 +271,44 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         if (p) particles.spawnExplosion(p.x, p.y, 0.5);
       }
 
+      // лазер мини-босса заряжается -> звук нарастания один раз при начале
+      // заряда (не каждый тик, пока идёт телеграф); фактический выстрел ->
+      // вспышка луча + отдельный звук
+      const chargingNow = new Set();
+      for (const p of current.players || []) {
+        if (p.laser_charging) {
+          chargingNow.add(p.id);
+          if (!laserChargingRef.current.has(p.id)) {
+            playMinibossLaserChargeSound();
+          }
+        }
+      }
+      laserChargingRef.current = chargingNow;
+
+      for (const shot of current.laser_shots || []) {
+        laserShotsRef.current.push({ ...shot, age: 0 });
+        playMinibossLaserFireSound();
+        shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, 10);
+      }
+      for (const shot of laserShotsRef.current) {
+        shot.age += dt / LASER_SHOT_LIFETIME;
+      }
+      laserShotsRef.current = laserShotsRef.current.filter((s) => s.age < 1);
+
       // серверные события взрыва (ракета/бомба) -> визуальная ударная волна
       // + звук; отслеживаем по количеству, т.к. explosions приходят как
       // "снимок за этот тик" без стабильных id
       for (const ex of current.explosions || []) {
-        explosionsRef.current.push({ x: ex.x, y: ex.y, radius: ex.radius, age: 0 });
-        particles.spawnExplosion(ex.x, ex.y, 1.6);
+        const isNuke = ex.kind === "nuke";
+        explosionsRef.current.push({ x: ex.x, y: ex.y, radius: ex.radius, age: 0, kind: ex.kind });
+        // ядерка — заметно масштабнее и дольше: больше частиц, сильнее тряска
+        particles.spawnExplosion(ex.x, ex.y, isNuke ? 4 : 1.6);
         playExplosionSound(true);
-        shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, 12);
+        shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, isNuke ? 26 : 12);
       }
       for (const explosion of explosionsRef.current) {
-        explosion.age += dt / EXPLOSION_LIFETIME;
+        const lifetime = explosion.kind === "nuke" ? NUKE_EXPLOSION_LIFETIME : EXPLOSION_LIFETIME;
+        explosion.age += dt / lifetime;
       }
       explosionsRef.current = explosionsRef.current.filter((e) => e.age < 1);
 
@@ -385,7 +423,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         .filter((p) => p.alive)
         .map((p) => {
           const s = smooth.get(p.id);
-          return { x: s?.x ?? p.x, y: s?.y ?? p.y, size: p.is_miniboss ? 52 : TANK_SIZE };
+          return { x: s?.x ?? p.x, y: s?.y ?? p.y, size: p.is_miniboss ? MINIBOSS_TANK_SIZE : TANK_SIZE };
         });
       for (let i = 0; i < aliveTanks.length; i++) {
         const tank = aliveTanks[i];
@@ -448,20 +486,57 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
             drawFlameCone3D(ctx, obj.data, timestamp / 1000);
           }
           const kickback = kickbackRef.current.get(obj.data.id) || 0;
-          drawTank3D(ctx, obj.data, obj.data.id === playerId, TANK_SIZE, timestamp / 1000, kickback);
+
+          // эффект разгона: сравниваем скорость с прошлым кадром — резкий
+          // рост читается как ускорение, танк "приседает" назад по ходу
+          // движения, как настоящая тяжёлая машина при разгоне с места
+          const prevMotion = prevMotionRef.current.get(obj.data.id);
+          const curSpeed = obj.data.speed ?? 0;
+          let accelBoost = 0;
+          let moveAngle = obj.data.turret_angle;
+          if (prevMotion && dt > 0) {
+            const dSpeed = curSpeed - prevMotion.speed;
+            accelBoost = Math.max(0, Math.min(1, dSpeed / dt / 900));
+            const mdx = obj.data.x - prevMotion.x;
+            const mdy = obj.data.y - prevMotion.y;
+            if (Math.hypot(mdx, mdy) > 0.5) {
+              moveAngle = Math.atan2(mdy, mdx);
+            }
+          }
+          prevMotionRef.current.set(obj.data.id, { x: obj.data.x, y: obj.data.y, speed: curSpeed });
+
+          // резкий разгон с места — всплеск пыли из-под гусениц, отдельно
+          // от обычной пыли на ходу (та зависит только от текущей скорости)
+          if (accelBoost > 0.4) {
+            particles.spawnDust(obj.data.x, obj.data.y);
+          }
+
+          drawTank3D(ctx, obj.data, obj.data.id === playerId, TANK_SIZE, timestamp / 1000, kickback, accelBoost, moveAngle);
           if (kickback > 0.5) {
             const flashX = obj.data.x + Math.cos(obj.data.turret_angle) * (TANK_SIZE / 2 + 8);
             const flashY = obj.data.y + Math.sin(obj.data.turret_angle) * (TANK_SIZE / 2 + 8);
             drawMuzzleFlash3D(ctx, flashX, flashY, obj.data.turret_angle, kickback);
           }
+          if (obj.data.laser_charging) {
+            drawLaserCharge3D(ctx, obj.data.x, obj.data.y, obj.data.laser_charging.angle, obj.data.laser_charging.progress);
+          }
         } else if (obj.type === "bullet") {
-          drawBullet3D(ctx, obj.data);
+          drawBullet3D(ctx, obj.data, timestamp / 1000);
         }
       }
 
       // взрывы ракет/бомб поверх всей сцены
       for (const explosion of explosionsRef.current) {
+        if (explosion.kind === "nuke") {
+          drawNukeExplosion3D(ctx, explosion, explosion.age);
+          continue;
+        }
         drawExplosion3D(ctx, explosion, explosion.age);
+      }
+
+      // вспышки фактических выстрелов лазера мини-босса
+      for (const shot of laserShotsRef.current) {
+        drawLaserShot3D(ctx, shot, shot.age);
       }
 
       // эффекты попаданий/разрушения стен

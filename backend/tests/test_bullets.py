@@ -1,23 +1,8 @@
 from app.game.entities import Player, Bullet
 
 
-def test_bullet_bounces_off_border_once(room):
-    from app.game.map import FIELD_WIDTH
-
-    p = Player.new("Test", 100, 100)
-    room.players[p.id] = p
-
-    # реалистичный сценарий: пуля летит из открытой области к правой границе
-    b = Bullet.new(p.id, FIELD_WIDTH - 50, 450, 0.0, 20)
-    room.bullets[b.id] = b
-    room._move_bullets()
-
-    assert b.vx < 0, f"expected bounce off border (vx<0), got vx={b.vx}"
-    assert b.bounces_left == 0, f"expected the single bounce to be used, got {b.bounces_left}"
-    assert b.x <= FIELD_WIDTH, f"bullet should stay within field, got x={b.x}"
-
-
-def test_bullet_disappears_on_second_border_hit(room):
+def test_bullet_disappears_on_border_hit(room):
+    # без рикошета: пуля гаснет при первом же касании границы поля, не отскакивает
     from app.game.map import FIELD_WIDTH
 
     p = Player.new("Test", 100, 100)
@@ -25,14 +10,13 @@ def test_bullet_disappears_on_second_border_hit(room):
 
     b = Bullet.new(p.id, FIELD_WIDTH - 50, 450, 0.0, 20)
     room.bullets[b.id] = b
-    room._move_bullets()  # first bounce, consumes the only bounce
 
-    for _ in range(60):
+    for _ in range(20):
         if b.id not in room.bullets:
             break
         room._move_bullets()
     else:
-        raise AssertionError("bullet survived 60 ticks after using its only bounce")
+        raise AssertionError("bullet survived 20 ticks after hitting the border, expected it to vanish")
 
 
 def test_bullet_destroyed_by_inner_wall_without_bounce(room):

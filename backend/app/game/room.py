@@ -31,7 +31,6 @@ from app.game.entities import (
     WEAPON_PICKUP_DURATION,
     BOMB_MIN_INTERVAL,
     BOMB_MAX_INTERVAL,
-    BOMB_FUSE_TIME,
     BOMB_DAMAGE,
     BOMB_RADIUS,
     WALL_MAX_HP,
@@ -123,6 +122,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._wall_restores: list[dict] = []  # стена восстановилась в этот тик
         self._miniboss_spawns: list[dict] = []  # мини-босс появился в этот тик (событие для клиента)
         self._level_ups: list[dict] = []  # игрок поднял уровень в этот тик
+        self._laser_shots: list[dict] = []  # лазер мини-босса фактически выстрелил в этот тик
         self._pending_respawns: dict[str, float] = {}  # player_id -> respawn_at
         self._chat_log: list[dict] = []  # последние сообщения чата (для истории новым игрокам)
         self._msg_buckets: dict[str, tuple[float, float]] = {}  # player_id -> (tokens, last_refill_at)
@@ -159,6 +159,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._wall_restores = []
         self._miniboss_spawns = []
         self._level_ups = []
+        self._laser_shots = []
 
         self._spawn_pickups(elapsed)
         self._spawn_super_pickup(now)
@@ -238,9 +239,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
             if bullet.kind == "flamethrower":
                 continue  # огнемёт не создаёт снарядов, обрабатывается отдельно
 
-            half = bullet.size / 2
-            bounced_this_tick = False
-            hit_inner_wall = False
+            hit_wall = False
             for _ in range(substeps):
                 bullet.x += bullet.vx * sub_dt
                 bullet.y += bullet.vy * sub_dt
@@ -249,46 +248,17 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
                 if wall is None:
                     continue
 
+                # без рикошета: любая стена (внешняя граница или внутреннее
+                # укрытие) гасит пулю при первом касании — предсказуемее и
+                # понятнее, чем отскок, который сложно предугадать в бою
+                hit_wall = True
                 if not wall.is_border:
-                    # внутренние укрытия крепости гасят пулю без рикошета —
-                    # хаотичные отскоки внутри тесных проходов сбивали с толку;
-                    # рикошет остаётся только предсказуемым "мячом от стены поля"
-                    hit_inner_wall = True
                     self._damage_wall(wall)
-                    if bullet.kind == "rocket":
-                        self._explode_rocket(bullet)
-                    break
+                if bullet.kind == "rocket":
+                    self._explode_rocket(bullet)
+                break
 
-                # определяем сторону удара по глубине проникновения в каждую
-                # ось и отражаем только соответствующую компоненту скорости
-                overlap_left = (bullet.x + half) - wall.x
-                overlap_right = wall.right - (bullet.x - half)
-                overlap_top = (bullet.y + half) - wall.y
-                overlap_bottom = wall.bottom - (bullet.y - half)
-                min_x_overlap = min(overlap_left, overlap_right)
-                min_y_overlap = min(overlap_top, overlap_bottom)
-
-                if min_x_overlap < min_y_overlap:
-                    bullet.x = wall.x - half if overlap_left < overlap_right else wall.right + half
-                    bullet.vx = -bullet.vx
-                else:
-                    bullet.y = wall.y - half if overlap_top < overlap_bottom else wall.bottom + half
-                    bullet.vy = -bullet.vy
-
-                # не более одного потраченного отскока за тик — на стыке двух
-                # смежных стен (напр. угол L-образного укрытия) пуля может
-                # задеть обе за разные под-шаги одного тика; это не должно
-                # тратить два отскока разом, иначе исчезает раньше времени
-                if not bounced_this_tick:
-                    bounced_this_tick = True
-                    if bullet.bounces_left <= 0:
-                        if bullet.kind == "rocket":
-                            self._explode_rocket(bullet)
-                        dead_bullets.append(bullet.id)
-                        break
-                    bullet.bounces_left -= 1
-
-            if hit_inner_wall:
+            if hit_wall:
                 dead_bullets.append(bullet.id)
 
         for bid in dead_bullets:
@@ -299,7 +269,10 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         for bullet in self.bullets.values():
             if bullet.kind == "flamethrower":
                 continue
-            for player in self.players.values():
+            # снимок списка игроков: _apply_damage ниже может убить игрока и
+            # через _maybe_spawn_miniboss добавить нового NPC в self.players,
+            # мутируя словарь прямо во время итерации по нему (RuntimeError)
+            for player in list(self.players.values()):
                 if not player.alive or player.id == bullet.owner_id:
                     continue
                 if aabb_collides_point(player, bullet):
@@ -550,19 +523,23 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
     def _process_bombs(self, now: float) -> None:
         exploded = []
         for bomb in self.bombs.values():
-            if now - bomb.spawned_at < BOMB_FUSE_TIME:
+            if now - bomb.spawned_at < bomb.fuse_time:
                 continue
             exploded.append(bomb.id)
-            for player in self.players.values():
+            # снимок списка — см. комментарий в _check_bullet_collisions
+            for player in list(self.players.values()):
                 if not player.alive:
                     continue
                 dist = math.hypot(player.x - bomb.x, player.y - bomb.y)
-                if dist > BOMB_RADIUS:
+                if dist > bomb.radius:
                     continue
-                falloff = 1 - dist / BOMB_RADIUS
-                dmg = round(BOMB_DAMAGE * falloff)
+                falloff = 1 - dist / bomb.radius
+                dmg = round(bomb.damage * falloff)
                 if dmg > 0:
-                    self._apply_damage(player, dmg, player.id)  # авиаудар не засчитывает фраг никому
+                    # владелец (мини-босс, артиллерия) засчитывает фраг; обычная
+                    # фоновая бомба без владельца — самоурон, фраг никому
+                    killer_id = bomb.owner_id or player.id
+                    self._apply_damage(player, dmg, killer_id)
             self._explosions.append({"x": bomb.x, "y": bomb.y, "radius": bomb.radius})
 
         for bid in exploded:
@@ -570,7 +547,8 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
 
     def _check_trap_collisions(self, now: float) -> None:
         for trap in self.traps.values():
-            for player in self.players.values():
+            # снимок списка — см. комментарий в _check_bullet_collisions
+            for player in list(self.players.values()):
                 if (
                     not player.alive
                     or now < player.trap_cooldown_until
@@ -684,6 +662,18 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
                     "xp": p.xp,
                     "is_miniboss": p.is_miniboss,
                     "has_miniboss_reward": now < p.miniboss_reward_until,
+                    "laser_charging": (
+                        {
+                            "angle": p.laser_angle,
+                            "progress": min(
+                                1.0,
+                                (now - p.laser_started_at)
+                                / max(1e-6, p.laser_fire_at - p.laser_started_at),
+                            ),
+                        }
+                        if p.laser_charging_until > now
+                        else None
+                    ),
                 }
                 for p in self.players.values()
             ],
@@ -709,8 +699,9 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
                     "id": bomb.id,
                     "x": bomb.x,
                     "y": bomb.y,
-                    "fuse_progress": min(1.0, (now - bomb.spawned_at) / BOMB_FUSE_TIME),
+                    "fuse_progress": min(1.0, (now - bomb.spawned_at) / bomb.fuse_time),
                     "radius": bomb.radius,
+                    "is_artillery": bool(bomb.owner_id),
                 }
                 for bomb in self.bombs.values()
             ],
@@ -739,6 +730,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
             ),
             "miniboss_spawns": self._miniboss_spawns,
             "level_ups": self._level_ups,
+            "laser_shots": self._laser_shots,
         }
 
         # сериализуем payload один раз за тик (не по разу на каждого клиента) —

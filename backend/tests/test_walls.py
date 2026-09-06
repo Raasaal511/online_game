@@ -1,6 +1,6 @@
 import time
 
-from app.game.entities import Player, Bullet
+from app.game.entities import Player, Bullet, WALL_MAX_HP
 from app.game.map import WALLS
 from app.game.room import rect_intersects_walls, _find_intersecting_wall
 
@@ -52,7 +52,7 @@ def test_wall_respawns_after_delay(room):
     room._process_wall_respawns(time.monotonic())
 
     assert wall.is_active
-    assert wall.hp == 2
+    assert wall.hp == WALL_MAX_HP
     wall.destroyed_at = None
 
 

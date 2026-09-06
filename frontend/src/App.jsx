@@ -149,23 +149,30 @@ export default function App() {
       </div>
 
       <div style={styles.canvasWrap}>
-        <GameCanvas
-          state={state}
-          mapInfo={mapInfo}
-          playerId={playerId}
-          sendAim={sendAim}
-          sendShoot={sendShoot}
-          onGameEvent={handleGameEvent}
-        />
-        <Leaderboard scores={leaderboard} />
-        <ScoreBoard players={sorted} playerId={playerId} />
-        {miniboss && me && <MinibossCompass me={me} boss={miniboss} />}
-        <ChatBox
-          messages={chatMessages}
-          playerId={playerId}
-          myNickname={nickname}
-          sendChat={sendChat}
-        />
+        <div
+          style={{
+            ...styles.canvasFrame,
+            aspectRatio: `${mapInfo.field?.width || 1400} / ${mapInfo.field?.height || 900}`,
+          }}
+        >
+          <GameCanvas
+            state={state}
+            mapInfo={mapInfo}
+            playerId={playerId}
+            sendAim={sendAim}
+            sendShoot={sendShoot}
+            onGameEvent={handleGameEvent}
+          />
+          <Leaderboard scores={leaderboard} />
+          <ScoreBoard players={sorted} playerId={playerId} />
+          {miniboss && me && <MinibossCompass me={me} boss={miniboss} />}
+          <ChatBox
+            messages={chatMessages}
+            playerId={playerId}
+            myNickname={nickname}
+            sendChat={sendChat}
+          />
+        </div>
 
         {banners.length > 0 && (
           <div style={overlayStyles.bannerStack}>
@@ -300,6 +307,16 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+  },
+  // границы этого блока точно совпадают с отрендеренным canvas (тот же
+  // aspect-ratio + max-width/max-height constraint) — раньше все оверлеи
+  // (чат, компас, скорборд) позиционировались от canvasWrap, который часто
+  // БОЛЬШЕ самого canvas из-за letterbox-центрирования; из-за этого нижние
+  // панели съезжали за пределы видимого игрового поля
+  canvasFrame: {
+    position: "relative",
+    maxWidth: "100%",
+    maxHeight: "100%",
   },
   status: { display: "flex", alignItems: "center", gap: "8px", color: colors.text, fontSize: "13px" },
   dot: { width: "8px", height: "8px", borderRadius: "50%", display: "inline-block" },

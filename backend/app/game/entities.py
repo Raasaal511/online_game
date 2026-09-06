@@ -9,11 +9,11 @@ TANK_ACCEL = 480.0  # px/sec^2, разгон — за 1/3 сек танк наб
 TANK_FRICTION = 560.0  # px/sec^2, торможение при отсутствии ввода — чуть резче разгона
 TANK_MAX_HP = 100
 
-BULLET_SPEED = 700.0
+BULLET_SPEED = 820.0
 BULLET_SIZE = 10
 BULLET_DAMAGE = 20
 FIRE_COOLDOWN = 0.80  # сек между выстрелами
-BULLET_MAX_BOUNCES = 1  # рикошет только от внешних границ поля, не от внутренних стен
+BULLET_MAX_BOUNCES = 0  # без рикошета — пуля гаснет при любом попадании в стену
 
 # Пулемёт: быстрый и слабый, без рикошета — чистый DPS-race на реакции
 MINIGUN_COOLDOWN = 0.12
@@ -76,12 +76,44 @@ MINIBOSS_REWARD_DURATION = 20.0  # дольше обычного supel-pickup (1
 MINIBOSS_REWARD_ARMOR_REDUCTION = 0.9
 MINIBOSS_REWARD_DAMAGE_MULT = 3.0
 
+# Арсенал мини-босса: 4 типа атак чередуются случайно между залпами — вместо
+# единственного предсказуемого веера. Каждая читается и уклоняется иначе.
+MINIBOSS_ATTACK_COOLDOWN = 2.4  # сек между любыми залпами (не суммируется с индивидуальными)
+
+# 1) Веерный залп — базовая AoE-атака (была единственной раньше)
+MINIBOSS_SALVO_SIZE = 5
+MINIBOSS_SALVO_SPREAD = 0.85
+
+# 2) Артиллерийский залп — 3 отложенных снаряда с телеграфом на земле (как
+# фоновая бомба), падают в область вокруг цели — заставляет покинуть зону
+# заранее, а не реагировать на уже летящий снаряд
+MINIBOSS_ARTILLERY_COUNT = 3
+MINIBOSS_ARTILLERY_SPREAD_RADIUS = 140.0  # разброс точек падения вокруг цели
+MINIBOSS_ARTILLERY_FUSE_TIME = 1.6  # сек между появлением метки и взрывом
+MINIBOSS_ARTILLERY_DAMAGE = 45
+MINIBOSS_ARTILLERY_RADIUS = 85.0
+
+# 3) Лазерный луч — после короткого прицельного телеграфа мгновенно бьёт по
+# прямой линии; легко уклониться, если заметить луч заранее, но не простить
+# промедление — высокий урон при попадании
+MINIBOSS_LASER_CHARGE_TIME = 0.9  # сек прицеливания перед выстрелом (видимый телеграф)
+MINIBOSS_LASER_WIDTH = 18.0
+MINIBOSS_LASER_RANGE = 900.0
+MINIBOSS_LASER_DAMAGE = 50
+
+# 4) Дробовик/осколочный — широкий веер множества слабых снарядов на средней
+# дистанции, опасен только вблизи (сильно расходится с расстоянием)
+MINIBOSS_SHOTGUN_COUNT = 10
+MINIBOSS_SHOTGUN_SPREAD = 1.6
+MINIBOSS_SHOTGUN_DAMAGE_MULT = 0.45  # доля от обычного урона босса за снаряд
+
 # Ядерка: редкое глобальное событие, взрыв покрывает ~50% диагонали карты
 NUKE_MIN_INTERVAL = 100.0
 NUKE_MAX_INTERVAL = 140.0  # в среднем ~раз в 2 минуты
 NUKE_WARNING_DURATION = 6.0  # сек предупреждения перед взрывом
 NUKE_DAMAGE = 70
 NUKE_RADIUS_FRACTION = 0.5  # доля от диагонали поля
+NUKE_LETHAL_FRACTION = 0.55  # доля радиуса от эпицентра — гарантированная смерть
 
 
 @dataclass
@@ -129,6 +161,10 @@ class Player:
     ai_waypoint_y: float = 0.0
     ai_last_salvo_at: float = -999.0
     chat_last_at: float = -999.0
+    laser_charging_until: float = 0.0  # мини-босс: телеграф лазера (виден до выстрела)
+    laser_started_at: float = 0.0  # момент начала заряда — для расчёта прогресса на клиенте
+    laser_fire_at: float = 0.0  # момент фактического выстрела лазером
+    laser_angle: float = 0.0  # угол луча (зафиксирован в момент начала заряда)
 
     def lifetime(self) -> float:
         end = self.died_at if self.died_at is not None else time.monotonic()
@@ -211,7 +247,7 @@ class Bullet:
         )
 
 
-WALL_MAX_HP = 2  # разрушаемая стена ломается за 2 попадания любого оружия
+WALL_MAX_HP = 5  # разрушаемая стена ломается за 5 попаданий любого оружия
 WALL_RESPAWN_DELAY = 20.0  # сек до восстановления разрушенной стены
 
 
@@ -273,16 +309,42 @@ class Trap:
 class Bomb:
     # случайный фоновый авиаудар "для атмосферы поля боя": появляется в
     # случайной точке карты с предупреждением (warning telegraph), через
-    # BOMB_FUSE_TIME взрывается сплэш-уроном по всем, кто в радиусе
+    # BOMB_FUSE_TIME взрывается сплэш-уроном по всем, кто в радиусе.
+    # Переиспользуется также для артиллерийского залпа мини-босса — тогда
+    # owner_id и fuse_time/damage/radius переопределяются под этот залп.
+    # значения по умолчанию синхронизированы вручную с BOMB_RADIUS/BOMB_DAMAGE/
+    # BOMB_FUSE_TIME ниже (константы объявлены позже в файле, использовать их
+    # напрямую как значения по умолчанию здесь нельзя — Python выполняет
+    # модуль сверху вниз)
     id: str
     x: float
     y: float
     spawned_at: float
     radius: float = 70.0
+    damage: int = 35
+    fuse_time: float = 2.2
+    owner_id: str = ""  # пусто = обычная фоновая бомба (самоурон, без фрага)
 
     @staticmethod
-    def new(x: float, y: float, now: float) -> "Bomb":
-        return Bomb(id=str(uuid.uuid4())[:8], x=x, y=y, spawned_at=now)
+    def new(
+        x: float,
+        y: float,
+        now: float,
+        radius: float = 70.0,
+        damage: int = 35,
+        fuse_time: float = 2.2,
+        owner_id: str = "",
+    ) -> "Bomb":
+        return Bomb(
+            id=str(uuid.uuid4())[:8],
+            x=x,
+            y=y,
+            spawned_at=now,
+            radius=radius,
+            damage=damage,
+            fuse_time=fuse_time,
+            owner_id=owner_id,
+        )
 
 
 BOMB_MIN_INTERVAL = 12.0

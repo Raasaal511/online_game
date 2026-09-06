@@ -121,8 +121,11 @@ class WeaponMixin:
 
     def _explode_rocket(self, bullet: Bullet) -> None:
         # сплэш-урон по всем живым в радиусе взрыва, урон убывает с расстоянием
-        # чисто линейно от ROCKET_SPLASH_DAMAGE до 0 на границе радиуса
-        for player in self.players.values():
+        # чисто линейно от ROCKET_SPLASH_DAMAGE до 0 на границе радиуса.
+        # Снимок списка игроков: _apply_damage может убить игрока и через
+        # _maybe_spawn_miniboss добавить нового NPC в self.players, мутируя
+        # словарь прямо во время итерации по нему (RuntimeError).
+        for player in list(self.players.values()):
             if not player.alive:
                 continue
             dist = math.hypot(player.x - bullet.x, player.y - bullet.y)
@@ -137,10 +140,11 @@ class WeaponMixin:
     def _process_flamethrower(self, now: float) -> None:
         # огнемёт не создаёт снарядов — конус проверяется напрямую каждый тик,
         # пока игрок удерживает кнопку стрельбы (flame_active_until обновляется в try_shoot)
-        for player in self.players.values():
+        for player in list(self.players.values()):
             if not player.alive or now >= player.flame_active_until:
                 continue
-            for target in self.players.values():
+            # снимок целей — см. комментарий в _explode_rocket
+            for target in list(self.players.values()):
                 if target.id == player.id or not target.alive:
                     continue
                 dist = math.hypot(target.x - player.x, target.y - player.y)
@@ -156,7 +160,8 @@ class WeaponMixin:
                 target.burn_owner_id = player.id
 
     def _process_burning(self, now: float) -> None:
-        for player in self.players.values():
+        # снимок списка — см. комментарий в _explode_rocket
+        for player in list(self.players.values()):
             if not player.alive or now >= player.burn_until:
                 continue
             if now - player.last_burn_tick_at < FLAMETHROWER_BURN_INTERVAL:
