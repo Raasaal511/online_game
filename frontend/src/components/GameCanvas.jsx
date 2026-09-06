@@ -96,7 +96,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
   const wallBreaksRef = useRef([]); // {x, y, age} — эффект разрушения стены
   const wallHitsRef = useRef([]); // {x, y, age} — искра при попадании без разрушения
   const kickbackRef = useRef(new Map()); // playerId -> 0..1, отдача ствола
-  const prevMotionRef = useRef(new Map()); // playerId -> {x, y, speed} прошлого кадра, для эффекта разгона
+  const motionSmoothRef = useRef(new Map()); // playerId -> {emaSpeed, dirX, dirY} — EMA для эффекта разгона
   const laserChargingRef = useRef(new Set()); // playerId'ы, у которых лазер уже заряжался в прошлом кадре
   const laserShotsRef = useRef([]); // {x, y, angle, range, age} — вспышки фактических выстрелов лазера
   const hadNukeRef = useRef(false); // была ли ядерка активна в прошлом кадре (для звука появления)
@@ -487,23 +487,32 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
           }
           const kickback = kickbackRef.current.get(obj.data.id) || 0;
 
-          // эффект разгона: сравниваем скорость с прошлым кадром — резкий
-          // рост читается как ускорение, танк "приседает" назад по ходу
-          // движения, как настоящая тяжёлая машина при разгоне с места
-          const prevMotion = prevMotionRef.current.get(obj.data.id);
-          const curSpeed = obj.data.speed ?? 0;
-          let accelBoost = 0;
-          let moveAngle = obj.data.turret_angle;
-          if (prevMotion && dt > 0) {
-            const dSpeed = curSpeed - prevMotion.speed;
-            accelBoost = Math.max(0, Math.min(1, dSpeed / dt / 900));
-            const mdx = obj.data.x - prevMotion.x;
-            const mdy = obj.data.y - prevMotion.y;
-            if (Math.hypot(mdx, mdy) > 0.5) {
-              moveAngle = Math.atan2(mdy, mdx);
-            }
+          // эффект разгона: сервер шлёт speed раз в тик (~33мс), а кадры рендера
+          // идут на 60fps (~16мс) — сравнение "сырой" скорости между соседними
+          // КАДРАМИ давало на каждом новом тике скачкообразную, шумную дельту
+          // (корпус резко дёргался в сторону). EMA сглаживает и скорость, и
+          // направление движения по времени, а не по кадру — стабильно и плавно.
+          let motion = motionSmoothRef.current.get(obj.data.id);
+          if (!motion) {
+            motion = { emaSpeed: 0, dirX: Math.cos(obj.data.turret_angle), dirY: Math.sin(obj.data.turret_angle) };
           }
-          prevMotionRef.current.set(obj.data.id, { x: obj.data.x, y: obj.data.y, speed: curSpeed });
+          const rawSpeed = obj.data.speed ?? 0;
+          const speedAlpha = Math.min(1, dt * 8); // ~125мс до устаканивания
+          const prevEmaSpeed = motion.emaSpeed;
+          motion.emaSpeed += (rawSpeed - motion.emaSpeed) * speedAlpha;
+          if (rawSpeed > 20) {
+            // направление движения обновляем только когда танк реально едет —
+            // на скорости ~0 vx/vy шумят и направление не имеет смысла
+            const dirAlpha = Math.min(1, dt * 10);
+            const targetDirX = obj.data.vx / rawSpeed;
+            const targetDirY = obj.data.vy / rawSpeed;
+            motion.dirX += (targetDirX - motion.dirX) * dirAlpha;
+            motion.dirY += (targetDirY - motion.dirY) * dirAlpha;
+          }
+          motionSmoothRef.current.set(obj.data.id, motion);
+
+          const accelBoost = Math.max(0, Math.min(1, (motion.emaSpeed - prevEmaSpeed) / dt / 400));
+          const moveAngle = Math.atan2(motion.dirY, motion.dirX);
 
           // резкий разгон с места — всплеск пыли из-под гусениц, отдельно
           // от обычной пыли на ходу (та зависит только от текущей скорости)

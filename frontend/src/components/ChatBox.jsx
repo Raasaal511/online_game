@@ -51,7 +51,7 @@ export default function ChatBox({ messages, playerId, myNickname, sendChat }) {
   return (
     <div style={styles.wrap}>
       <div style={styles.log} ref={listRef}>
-        {messages.slice(-8).map((m, i) => (
+        {messages.map((m, i) => (
           <div key={i} style={styles.line}>
             <span style={{ ...styles.nick, color: m.nickname === myNickname ? colors.accent : colors.info }}>
               {m.nickname}:
@@ -84,24 +84,22 @@ export default function ChatBox({ messages, playerId, myNickname, sendChat }) {
 
 const styles = {
   wrap: {
-    position: "absolute",
-    bottom: 12,
-    left: 12,
-    width: "300px",
-    maxWidth: "40vw",
     display: "flex",
     flexDirection: "column",
     gap: "6px",
-    pointerEvents: "auto",
+    flex: 1,
+    minHeight: 0,
   },
   log: {
     display: "flex",
     flexDirection: "column",
     gap: "2px",
-    maxHeight: "150px",
+    flex: 1,
+    minHeight: 0,
     overflowY: "auto",
     padding: "8px 10px",
     fontSize: "12px",
+    boxSizing: "border-box",
     ...panel,
     background: "rgba(15, 23, 42, 0.55)",
   },

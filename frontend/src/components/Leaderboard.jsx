@@ -24,11 +24,9 @@ export default function Leaderboard({ scores }) {
 
 const styles = {
   container: {
-    position: "absolute",
-    top: 12,
-    right: 12,
-    minWidth: "180px",
+    flexShrink: 0,
     padding: "12px 16px",
+    boxSizing: "border-box",
     ...panel,
   },
   title: { margin: "0 0 10px 0", fontSize: "13px", fontWeight: 700, color: colors.text },

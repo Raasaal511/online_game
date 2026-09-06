@@ -148,24 +148,67 @@ export default function App() {
         )}
       </div>
 
-      <div style={styles.canvasWrap}>
-        <div
-          style={{
-            ...styles.canvasFrame,
-            aspectRatio: `${mapInfo.field?.width || 1400} / ${mapInfo.field?.height || 900}`,
-          }}
-        >
-          <GameCanvas
-            state={state}
-            mapInfo={mapInfo}
-            playerId={playerId}
-            sendAim={sendAim}
-            sendShoot={sendShoot}
-            onGameEvent={handleGameEvent}
-          />
+      <div style={styles.arenaRow}>
+        <div style={styles.canvasWrap}>
+          <div
+            style={{
+              ...styles.canvasFrame,
+              aspectRatio: `${mapInfo.field?.width || 1400} / ${mapInfo.field?.height || 900}`,
+            }}
+          >
+            <GameCanvas
+              state={state}
+              mapInfo={mapInfo}
+              playerId={playerId}
+              sendAim={sendAim}
+              sendShoot={sendShoot}
+              onGameEvent={handleGameEvent}
+            />
+            {/* только игровые индикаторы поверх поля — компас и баннеры коротки
+                и не заслоняют обзор; текстовые панели (лидерборд/список
+                игроков/чат) вынесены за пределы арены в боковую колонку ниже */}
+            {miniboss && me && <MinibossCompass me={me} boss={miniboss} />}
+
+            {banners.length > 0 && (
+              <div style={overlayStyles.bannerStack}>
+                {banners.map((b) => (
+                  <div key={b.id} style={{ ...overlayStyles.banner, ...overlayStyles[`banner_${b.kind}`] }}>
+                    {b.text}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {deathInfo && (
+              <div style={overlayStyles.backdrop}>
+                <div style={overlayStyles.box}>
+                  <div style={styles.badge}>💥 ТАНК УНИЧТОЖЕН</div>
+                  <h2 style={styles.h2}>Ты погиб</h2>
+                  <div style={overlayStyles.statsRow}>
+                    <div style={overlayStyles.stat}>
+                      <div style={overlayStyles.statValue}>{deathInfo.kills}</div>
+                      <div style={overlayStyles.statLabel}>убийств</div>
+                    </div>
+                    <div style={overlayStyles.stat}>
+                      <div style={overlayStyles.statValue}>{deathInfo.lifetime_seconds.toFixed(1)}с</div>
+                      <div style={overlayStyles.statLabel}>прожито</div>
+                    </div>
+                  </div>
+                  {deathInfo.is_new_record && (
+                    <p style={{ color: colors.warning, fontWeight: 700, margin: "12px 0 0" }}>
+                      🎉 Новый рекорд топ-3!
+                    </p>
+                  )}
+                  <p style={styles.respawnText}>Респавн через {deathInfo.respawn_in}с...</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={styles.sidePanel}>
           <Leaderboard scores={leaderboard} />
           <ScoreBoard players={sorted} playerId={playerId} />
-          {miniboss && me && <MinibossCompass me={me} boss={miniboss} />}
           <ChatBox
             messages={chatMessages}
             playerId={playerId}
@@ -173,41 +216,6 @@ export default function App() {
             sendChat={sendChat}
           />
         </div>
-
-        {banners.length > 0 && (
-          <div style={overlayStyles.bannerStack}>
-            {banners.map((b) => (
-              <div key={b.id} style={{ ...overlayStyles.banner, ...overlayStyles[`banner_${b.kind}`] }}>
-                {b.text}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {deathInfo && (
-          <div style={overlayStyles.backdrop}>
-            <div style={overlayStyles.box}>
-              <div style={styles.badge}>💥 ТАНК УНИЧТОЖЕН</div>
-              <h2 style={styles.h2}>Ты погиб</h2>
-              <div style={overlayStyles.statsRow}>
-                <div style={overlayStyles.stat}>
-                  <div style={overlayStyles.statValue}>{deathInfo.kills}</div>
-                  <div style={overlayStyles.statLabel}>убийств</div>
-                </div>
-                <div style={overlayStyles.stat}>
-                  <div style={overlayStyles.statValue}>{deathInfo.lifetime_seconds.toFixed(1)}с</div>
-                  <div style={overlayStyles.statLabel}>прожито</div>
-                </div>
-              </div>
-              {deathInfo.is_new_record && (
-                <p style={{ color: colors.warning, fontWeight: 700, margin: "12px 0 0" }}>
-                  🎉 Новый рекорд топ-3!
-                </p>
-              )}
-              <p style={styles.respawnText}>Респавн через {deathInfo.respawn_in}с...</p>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -256,7 +264,10 @@ function ScoreBoard({ players, playerId }) {
               fontWeight: p.id === playerId ? 700 : 400,
             }}
           >
-            <span>{p.nickname}</span>
+            <span>
+              {p.level > 1 && <span style={{ color: colors.warning }}>Lv.{p.level} </span>}
+              {p.nickname}
+            </span>
             <span>{p.kills}K / {p.deaths}D</span>
           </li>
         ))}
@@ -300,13 +311,31 @@ const styles = {
     boxSizing: "border-box",
     ...panel,
   },
+  arenaRow: {
+    display: "flex",
+    flex: 1,
+    minHeight: 0,
+    gap: "12px",
+  },
   canvasWrap: {
     position: "relative",
     flex: 1,
+    minWidth: 0,
     minHeight: 0,
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+  },
+  // боковая колонка вне игрового поля — лидерборд/список игроков/чат больше
+  // не лежат поверх арены (перекрывали обзор и мешали целиться/двигаться)
+  sidePanel: {
+    flexShrink: 0,
+    width: "260px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+    minHeight: 0,
+    overflow: "hidden",
   },
   // границы этого блока точно совпадают с отрендеренным canvas (тот же
   // aspect-ratio + max-width/max-height constraint) — раньше все оверлеи
@@ -385,17 +414,15 @@ const overlayStyles = {
   statLabel: { fontSize: "11px", color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.5px" },
   respawnText: { color: colors.textMuted, fontSize: "13px", margin: "16px 0 0" },
   scoreboard: {
-    position: "absolute",
-    top: 12,
-    left: 12,
-    minWidth: "170px",
+    flexShrink: 0,
     padding: "12px 16px",
+    boxSizing: "border-box",
     color: colors.text,
     ...panel,
   },
   compass: {
     position: "absolute",
-    top: 190,
+    top: 12,
     right: 12,
     width: "64px",
     height: "64px",

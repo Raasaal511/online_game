@@ -991,15 +991,27 @@ export function drawTank3D(ctx, player, isMe, baseTankSize, t, kickback = 0, acc
     bodyColorLight = mixColor(bodyColorLight, "#fef08a", levelProgress * 0.75);
   }
 
-  // угрожающее пульсирующее свечение вокруг мини-босса — виден издалека
+  // угрожающее пульсирующее свечение вокруг мини-босса — виден издалека.
+  // Двухслойное: медленный широкий пульс "присутствия" + быстрый узкий
+  // "тревожный" импульс поверх — раньше был один слой и читался вяло для
+  // объекта втрое крупнее обычного танка.
   if (isMiniboss) {
-    const bossPulse = 0.5 + 0.5 * Math.sin((t ?? 0) * 4);
-    const bossGlow = ctx.createRadialGradient(x, y, half * 0.5, x, y, tankSize * 2);
-    bossGlow.addColorStop(0, `rgba(220, 38, 38, ${0.35 * bossPulse})`);
-    bossGlow.addColorStop(1, "rgba(220, 38, 38, 0)");
-    ctx.fillStyle = bossGlow;
+    const slowPulse = 0.5 + 0.5 * Math.sin((t ?? 0) * 2.2);
+    const outerGlow = ctx.createRadialGradient(x, y, half * 0.6, x, y, tankSize * 2.4);
+    outerGlow.addColorStop(0, `rgba(220, 38, 38, ${0.3 * slowPulse})`);
+    outerGlow.addColorStop(1, "rgba(220, 38, 38, 0)");
+    ctx.fillStyle = outerGlow;
     ctx.beginPath();
-    ctx.arc(x, y, tankSize * 2, 0, Math.PI * 2);
+    ctx.arc(x, y, tankSize * 2.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    const fastPulse = 0.5 + 0.5 * Math.sin((t ?? 0) * 7);
+    const innerGlow = ctx.createRadialGradient(x, y, half * 0.4, x, y, tankSize * 1.3);
+    innerGlow.addColorStop(0, `rgba(248, 113, 113, ${0.25 * fastPulse})`);
+    innerGlow.addColorStop(1, "rgba(248, 113, 113, 0)");
+    ctx.fillStyle = innerGlow;
+    ctx.beginPath();
+    ctx.arc(x, y, tankSize * 1.3, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -1129,16 +1141,44 @@ export function drawTank3D(ctx, player, isMe, baseTankSize, t, kickback = 0, acc
   // затухает от 1 (сразу после выстрела) до 0, создаёт ощущение мощности
   const barrelPullback = -kickback * 5;
   const turretGrad = ctx.createRadialGradient(-3, -3, 1, 0, 0, tankSize / 3);
-  turretGrad.addColorStop(0, "#334155");
-  turretGrad.addColorStop(1, "#0f172a");
+  turretGrad.addColorStop(0, isMiniboss ? "#7f1d1d" : "#334155");
+  turretGrad.addColorStop(1, isMiniboss ? "#1a0505" : "#0f172a");
   ctx.fillStyle = turretGrad;
   ctx.beginPath();
   ctx.arc(0, 0, tankSize / 3, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = "#1e293b";
-  ctx.fillRect(barrelPullback, -3, tankSize / 2 + 8, 6);
-  ctx.fillStyle = "#0f172a";
-  ctx.fillRect(barrelPullback, -1.5, tankSize / 2 + 8, 3);
+
+  if (isMiniboss) {
+    // мини-босс отличим не только размером/цветом: спаренные стволы (он
+    // реально бьёт несколькими типами атак) + вращающийся сенсор-кольцо на
+    // башне, читается как настоящая боевая машина, а не увеличенный игрок
+    const barrelLen = tankSize / 2 + 10;
+    ctx.fillStyle = "#1e293b";
+    ctx.fillRect(barrelPullback, -7, barrelLen, 5);
+    ctx.fillRect(barrelPullback, 2, barrelLen, 5);
+    ctx.fillStyle = "#0f172a";
+    ctx.fillRect(barrelPullback, -5.5, barrelLen, 2.5);
+    ctx.fillRect(barrelPullback, 3.5, barrelLen, 2.5);
+
+    const spinAngle = (t ?? 0) * 3;
+    ctx.strokeStyle = "rgba(248, 113, 113, 0.7)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, tankSize / 3 + 4, spinAngle, spinAngle + 1.8);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, tankSize / 3 + 4, spinAngle + Math.PI, spinAngle + Math.PI + 1.8);
+    ctx.stroke();
+    ctx.fillStyle = "#fecaca";
+    ctx.beginPath();
+    ctx.arc(0, 0, 3, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.fillStyle = "#1e293b";
+    ctx.fillRect(barrelPullback, -3, tankSize / 2 + 8, 6);
+    ctx.fillStyle = "#0f172a";
+    ctx.fillRect(barrelPullback, -1.5, tankSize / 2 + 8, 3);
+  }
   ctx.restore();
 
   // бейдж подобранного оружия над башней — короткая цветная метка
@@ -1189,6 +1229,32 @@ export function drawTank3D(ctx, player, isMe, baseTankSize, t, kickback = 0, acc
   ctx.fillStyle = isMiniboss ? "#dc2626" : hpRatio > 0.3 ? "#22c55e" : "#ef4444";
   ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth * hpRatio, barHeight);
   ctx.shadowColor = "transparent";
+
+  // указатель "это я" сразу после респавна — на большой карте с 10 танками
+  // одинакового вида сложно быстро найти себя глазами; пока действует
+  // неуязвимость (spawn protection), над своим танком висит заметная
+  // подпрыгивающая стрелка — единственный явный сигнал "ты здесь"
+  if (isMe && hasSpawnProtection) {
+    const bob = Math.sin((t ?? 0) * 6) * 5;
+    const arrowY = nameY - 34 + bob;
+    ctx.save();
+    ctx.fillStyle = "#facc15";
+    ctx.strokeStyle = "rgba(15, 23, 42, 0.8)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, arrowY + 14);
+    ctx.lineTo(x - 8, arrowY);
+    ctx.lineTo(x - 3, arrowY);
+    ctx.lineTo(x - 3, arrowY - 10);
+    ctx.lineTo(x + 3, arrowY - 10);
+    ctx.lineTo(x + 3, arrowY);
+    ctx.lineTo(x + 8, arrowY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
   ctx.restore();
 }
 

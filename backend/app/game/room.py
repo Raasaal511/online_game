@@ -643,6 +643,8 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
                     "y": round(p.y, 1),
                     "turret_angle": round(p.turret_angle, 3),
                     "speed": round(math.hypot(p.vx, p.vy), 1),
+                    "vx": round(p.vx, 1),
+                    "vy": round(p.vy, 1),
                     "alive": p.alive,
                     "hp": p.hp,
                     "max_hp": p.max_hp,

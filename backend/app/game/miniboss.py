@@ -234,6 +234,11 @@ class MinibossMixin:
     def _maybe_spawn_miniboss(self, x: float, y: float, owner_nickname: str) -> None:
         from app.game.entities import MINIBOSS_SPAWN_CHANCE
 
+        # не больше одного мини-босса на карте одновременно — раньше при частых
+        # смертях в активной игре они накапливались (2-3 сразу), что превращало
+        # арену в хаос вместо редкой особой угрозы
+        if any(p.is_miniboss and p.alive for p in self.players.values()):
+            return
         if random.random() >= MINIBOSS_SPAWN_CHANCE:
             return
         boss = spawn_miniboss(x, y, owner_nickname)
