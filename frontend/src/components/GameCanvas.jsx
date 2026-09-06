@@ -13,6 +13,8 @@ import {
   drawMuzzleFlash3D,
   drawBomb3D,
   drawExplosion3D,
+  drawWallBreakEffect3D,
+  drawWallHitSpark3D,
   drawParticles3D,
 } from "../game/render3d.js";
 import {
@@ -24,8 +26,13 @@ import {
   playExplosionSound,
   playPickupSound,
   playBombWarningSound,
+  playWallHitSound,
+  playWallBreakSound,
   unlockAudio,
 } from "../game/sound.js";
+
+const WALL_BREAK_LIFETIME = 0.5;
+const WALL_HIT_LIFETIME = 0.2;
 
 const TANK_SIZE = 32;
 const INTERP_SPEED = 12; // выше = быстрее "догоняет" серверную позицию
@@ -72,6 +79,8 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
   const isFirstPickupSync = useRef(true);
   const isFirstBombSync = useRef(true);
   const explosionsRef = useRef([]); // {x, y, radius, age}
+  const wallBreaksRef = useRef([]); // {x, y, age} — эффект разрушения стены
+  const wallHitsRef = useRef([]); // {x, y, age} — искра при попадании без разрушения
   const kickbackRef = useRef(new Map()); // playerId -> 0..1, отдача ствола
 
   const fieldWidth = mapInfo.field?.width || 1400;
@@ -217,6 +226,28 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       }
       explosionsRef.current = explosionsRef.current.filter((e) => e.age < 1);
 
+      // стена сломана оружием игрока -> обвал обломков + звук + тряска
+      for (const brk of current.wall_breaks || []) {
+        wallBreaksRef.current.push({ x: brk.x, y: brk.y, age: 0 });
+        particles.spawnExplosion(brk.x, brk.y, 0.9);
+        playWallBreakSound();
+        shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, 6);
+      }
+      for (const effect of wallBreaksRef.current) {
+        effect.age += dt / WALL_BREAK_LIFETIME;
+      }
+      wallBreaksRef.current = wallBreaksRef.current.filter((e) => e.age < 1);
+
+      // попадание в стену без разрушения -> короткая искра + глухой удар
+      for (const hit of current.wall_hits || []) {
+        wallHitsRef.current.push({ x: hit.x, y: hit.y, age: 0 });
+        playWallHitSound();
+      }
+      for (const hit of wallHitsRef.current) {
+        hit.age += dt / WALL_HIT_LIFETIME;
+      }
+      wallHitsRef.current = wallHitsRef.current.filter((e) => e.age < 1);
+
       particles.update(dt);
 
       // следы гусениц: используем сглаженные позиции + серверную скорость,
@@ -285,11 +316,23 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         drawBomb3D(ctx, bomb, timestamp / 1000);
       }
 
+      // динамическое состояние разрушаемых стен (active/hp) приходит в
+      // каждом тике отдельно от статичной геометрии (mapInfo.walls, один раз
+      // при welcome) — объединяем по id перед отрисовкой
+      const wallStateById = new Map();
+      for (const ws of current.wall_states || []) {
+        wallStateById.set(ws.id, ws);
+      }
+
       // painter's algorithm: все объекты сцены сортируются по Y (глубине),
       // чтобы дальние перекрывались ближними как в настоящей 3D-сцене
       const sceneObjects = [];
       for (const w of walls) {
-        sceneObjects.push({ type: "wall", y: w.y + w.height, data: w });
+        const dynamicState = wallStateById.get(w.id);
+        const merged = dynamicState
+          ? { ...w, active: dynamicState.active, hp: dynamicState.hp }
+          : w;
+        sceneObjects.push({ type: "wall", y: w.y + w.height, data: merged });
       }
       for (const pu of current.pickups || []) {
         sceneObjects.push({ type: "pickup", y: pu.y, data: pu });
@@ -335,6 +378,14 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         drawExplosion3D(ctx, explosion, explosion.age);
       }
 
+      // эффекты попаданий/разрушения стен
+      for (const hit of wallHitsRef.current) {
+        drawWallHitSpark3D(ctx, hit, hit.age);
+      }
+      for (const brk of wallBreaksRef.current) {
+        drawWallBreakEffect3D(ctx, brk, brk.age);
+      }
+
       // частицы (взрывы, искры, дым, пламя) поверх всего, с псевдо-3D высотой
       drawParticles3D(ctx, particles.getParticles());
 
@@ -361,6 +412,9 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         cursor: "crosshair",
         maxWidth: "100%",
         height: "auto",
+        userSelect: "none",
+        WebkitUserSelect: "none",
+        touchAction: "none",
       }}
     />
   );

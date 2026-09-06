@@ -56,6 +56,8 @@ TRAP_TRIGGER_COOLDOWN = 3.0  # сек до повторного срабатыв
 COLLISION_DAMAGE = 6  # урон каждому танку при столкновении друг с другом
 COLLISION_PUSHBACK = 90.0  # px/sec импульс взаимного отталкивания
 
+SPAWN_PROTECTION_DURATION = 1.5  # сек неуязвимости сразу после респавна
+
 
 @dataclass
 class Player:
@@ -86,6 +88,7 @@ class Player:
     super_until: float = 0.0  # действие супер-power-up из центра карты
     trap_cooldown_until: float = 0.0  # чтобы одна и та же ловушка не тикала каждый тик
     last_collision_at: float = -999.0  # антиспам урона при затяжном контакте танк-танк
+    spawn_protected_until: float = 0.0  # неуязвимость сразу после респавна
     weapon: str = "cannon"
     weapon_until: float = 0.0  # timestamp, до которого действует подобранное оружие
     flame_active_until: float = 0.0  # окно, в течение которого конус огнемёта активен
@@ -153,6 +156,10 @@ class Bullet:
         )
 
 
+WALL_MAX_HP = 2  # разрушаемая стена ломается за 2 попадания любого оружия
+WALL_RESPAWN_DELAY = 20.0  # сек до восстановления разрушенной стены
+
+
 @dataclass
 class Wall:
     x: float
@@ -160,6 +167,11 @@ class Wall:
     width: float
     height: float
     is_border: bool = False  # внешняя граница поля vs внутреннее укрытие
+    destructible: bool = False  # можно ли разрушить стрельбой (только внутренние укрытия)
+    is_ramp: bool = False  # пандус: танки проезжают поверх, не создаёт коллизии для игроков
+    id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    hp: int = field(init=False)
+    destroyed_at: float | None = field(default=None, init=False)
     right: float = field(init=False)
     bottom: float = field(init=False)
 
@@ -168,6 +180,13 @@ class Wall:
         # коллизии (rect_intersects_walls вызывается ~сотни раз за тик)
         self.right = self.x + self.width
         self.bottom = self.y + self.height
+        self.hp = WALL_MAX_HP if self.destructible else 0
+
+    @property
+    def is_active(self) -> bool:
+        # неактивная стена (разрушена и ждёт восстановления) не участвует в
+        # коллизиях, но продолжает существовать как объект карты
+        return self.destroyed_at is None
 
 
 @dataclass

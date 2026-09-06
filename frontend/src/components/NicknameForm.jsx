@@ -34,6 +34,22 @@ export default function NicknameForm({ onSubmit }) {
         <button style={styles.button} type="submit" disabled={!value.trim()}>
           Играть
         </button>
+
+        <div style={styles.controlsBox}>
+          <div style={styles.controlsTitle}>Управление</div>
+          <div style={styles.controlRow}>
+            <span style={styles.keyChip}>W A S D</span>
+            <span style={styles.controlText}>движение</span>
+          </div>
+          <div style={styles.controlRow}>
+            <span style={styles.keyChip}>Мышь</span>
+            <span style={styles.controlText}>прицел и стрельба (ЛКМ)</span>
+          </div>
+          <div style={styles.controlRow}>
+            <span style={styles.keyChip}>Дропы</span>
+            <span style={styles.controlText}>оружие, броня, ускорение на карте</span>
+          </div>
+        </div>
       </form>
     </div>
   );
@@ -109,5 +125,45 @@ const styles = {
     cursor: "pointer",
     width: "100%",
     transition: "transform 0.1s ease, filter 0.15s ease",
+  },
+  controlsBox: {
+    width: "100%",
+    marginTop: "8px",
+    padding: "12px 14px",
+    borderRadius: "10px",
+    background: "rgba(255,255,255,0.03)",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colors.panelBorder,
+    textAlign: "left",
+  },
+  controlsTitle: {
+    fontSize: "11px",
+    fontWeight: 700,
+    letterSpacing: "1px",
+    color: colors.textMuted,
+    textTransform: "uppercase",
+    marginBottom: "8px",
+  },
+  controlRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    padding: "3px 0",
+  },
+  keyChip: {
+    fontSize: "11px",
+    fontWeight: 700,
+    color: colors.text,
+    background: "rgba(255,255,255,0.07)",
+    padding: "3px 8px",
+    borderRadius: "6px",
+    minWidth: "62px",
+    textAlign: "center",
+    flexShrink: 0,
+  },
+  controlText: {
+    fontSize: "12px",
+    color: colors.textMuted,
   },
 };

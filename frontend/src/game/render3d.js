@@ -4,7 +4,7 @@
 
 import { drawIcon } from "./icons.js";
 
-const TILT = 0.62; // вертикальное сжатие пола/объектов, имитирует наклон камеры
+const TILT = 0.72; // вертикальное сжатие пола/объектов, имитирует наклон камеры
 const LIGHT_DIR = { x: -0.5, y: -1 }; // направление "света" для боковых граней
 
 const WEAPON_BADGE_COLORS = {
@@ -43,28 +43,49 @@ export function drawFloor(ctx, width, height) {
   }
   ctx.restore();
 
-  // мягкая виньетка для ощущения сцены
+  // виньетка для ощущения глубины сцены (усилена относительно v1 — карта
+  // выросла, и без более тёмных краёв плоское поле визуально "рассыпалось")
   const vignette = ctx.createRadialGradient(
     width / 2,
     height / 2,
-    Math.min(width, height) * 0.3,
+    Math.min(width, height) * 0.25,
     width / 2,
     height / 2,
-    Math.max(width, height) * 0.75
+    Math.max(width, height) * 0.7
   );
   vignette.addColorStop(0, "rgba(0,0,0,0)");
-  vignette.addColorStop(1, "rgba(0,0,0,0.35)");
+  vignette.addColorStop(1, "rgba(0,0,0,0.48)");
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, width, height);
 }
 
 export function drawWall3D(ctx, wall) {
-  const depth = Math.min(16, wall.height, wall.width) * 0.5 + 6;
+  if (wall.is_ramp) {
+    drawRamp3D(ctx, wall);
+    return;
+  }
+  if (wall.destructible && wall.active === false) {
+    drawWallRuins3D(ctx, wall);
+    return;
+  }
+
+  const depth = Math.min(20, wall.height, wall.width) * 0.5 + 8;
   const { x, y, width, height } = wall;
 
-  // тень на полу
-  ctx.fillStyle = "rgba(0,0,0,0.35)";
-  ctx.fillRect(x + 4, y + height, width, depth * 0.5);
+  // растянутая мягкая тень на полу (радиальный градиент вместо жёсткого
+  // прямоугольника — читается более объёмно и естественно)
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.beginPath();
+  ctx.ellipse(
+    x + width / 2 + 5,
+    y + height + depth * 0.25,
+    width / 2 + 6,
+    depth * 0.5 + 3,
+    0,
+    0,
+    Math.PI * 2
+  );
+  ctx.fill();
 
   // боковая грань (темнее, создаёт объём)
   ctx.fillStyle = "#334155";
@@ -78,11 +99,94 @@ export function drawWall3D(ctx, wall) {
 
   // верхняя грань (светлее, приподнята на depth)
   const topY = y - depth * TILT;
-  ctx.fillStyle = "#475569";
+  const topGrad = ctx.createLinearGradient(x, topY, x, topY + height);
+  topGrad.addColorStop(0, "#5b6b84");
+  topGrad.addColorStop(1, "#475569");
+  ctx.fillStyle = topGrad;
   ctx.fillRect(x, topY, width, height);
   ctx.strokeStyle = "rgba(203, 213, 225, 0.25)";
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, topY + 0.5, width - 1, height - 1);
+
+  // повреждение: стена на последнем HP получает видимые трещины —
+  // сигнал игроку, что ещё один удар её разрушит
+  if (wall.destructible && wall.hp === 1) {
+    ctx.strokeStyle = "rgba(15, 23, 42, 0.6)";
+    ctx.lineWidth = 1.5;
+    const cx = x + width / 2;
+    const cy = topY + height / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - width * 0.3, topY);
+    ctx.lineTo(cx - width * 0.05, cy - height * 0.15);
+    ctx.lineTo(cx + width * 0.15, cy + height * 0.1);
+    ctx.lineTo(cx + width * 0.3, topY + height);
+    ctx.moveTo(cx - width * 0.1, cy - height * 0.1);
+    ctx.lineTo(cx - width * 0.35, cy + height * 0.25);
+    ctx.stroke();
+  }
+}
+
+function drawRamp3D(ctx, wall) {
+  // пандус: приподнятая площадка со скошенным (не вертикальным) передним
+  // краем — визуально читается как "въезд наверх", а не сплошная стена
+  const { x, y, width, height } = wall;
+  const depth = 10;
+  const topY = y - depth * TILT;
+
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.beginPath();
+  ctx.ellipse(x + width / 2, y + height + 4, width / 2 + 4, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // скошенный въезд (трапеция вместо прямоугольника)
+  const inset = width * 0.25;
+  ctx.fillStyle = "#64748b";
+  ctx.beginPath();
+  ctx.moveTo(x, y + height);
+  ctx.lineTo(x + width, y + height);
+  ctx.lineTo(x + width - inset, topY);
+  ctx.lineTo(x + inset, topY);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = "rgba(226, 232, 240, 0.4)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // диагональная штриховка — читается как "рифлёная поверхность для въезда"
+  ctx.strokeStyle = "rgba(15, 23, 42, 0.25)";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) {
+    const fx = x + (width * i) / 4;
+    ctx.beginPath();
+    ctx.moveTo(fx, y + height);
+    ctx.lineTo(fx - inset * (i / 4), topY);
+    ctx.stroke();
+  }
+}
+
+function drawWallRuins3D(ctx, wall) {
+  // стена разрушена: низкая куча обломков вместо полноразмерной преграды —
+  // читается как "здесь можно проехать", но остаётся визуальным ориентиром
+  const { x, y, width, height } = wall;
+  const cx = x + width / 2;
+  const cy = y + height / 2;
+
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + 3, width / 2, height / 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#3f4c5f";
+  const rubbleCount = 5;
+  for (let i = 0; i < rubbleCount; i++) {
+    const rx = x + ((i * 37) % width);
+    const ry = y + ((i * 53) % Math.max(height, 1));
+    const size = 4 + (i % 3) * 2;
+    ctx.beginPath();
+    ctx.arc(rx, ry, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 export function drawPickup3D(ctx, pickup, colors, t) {
@@ -317,6 +421,44 @@ export function drawExplosion3D(ctx, explosion, age) {
   ctx.stroke();
 }
 
+export function drawWallBreakEffect3D(ctx, effect, age) {
+  // age: 0..1, вспышка пыли/трещин в момент разрушения стены (отдельно от
+  // drawExplosion3D — это не взрыв оружия, а обвал каменной кладки)
+  if (age >= 1) return;
+  const alpha = 1 - age;
+  const radius = 40 + age * 50;
+
+  ctx.fillStyle = `rgba(148, 163, 184, ${0.35 * alpha})`;
+  ctx.beginPath();
+  ctx.arc(effect.x, effect.y, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // разлетающиеся обломки-щепки по кругу
+  const shardCount = 8;
+  ctx.strokeStyle = `rgba(71, 85, 105, ${0.7 * alpha})`;
+  ctx.lineWidth = 3;
+  for (let i = 0; i < shardCount; i++) {
+    const a = (i / shardCount) * Math.PI * 2;
+    const dist = 15 + age * 35;
+    const sx = effect.x + Math.cos(a) * dist;
+    const sy = effect.y + Math.sin(a) * dist * 0.6;
+    ctx.beginPath();
+    ctx.moveTo(effect.x, effect.y);
+    ctx.lineTo(sx, sy);
+    ctx.stroke();
+  }
+}
+
+export function drawWallHitSpark3D(ctx, hit, age) {
+  // age: 0..1, короткая искра при попадании, не разрушившем стену
+  if (age >= 1) return;
+  const alpha = 1 - age;
+  ctx.fillStyle = `rgba(226, 232, 240, ${0.6 * alpha})`;
+  ctx.beginPath();
+  ctx.arc(hit.x, hit.y, 6 + age * 10, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   const {
     x,
@@ -328,10 +470,17 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
     has_speed_boost: hasSpeedBoost,
     has_slow: hasSlow,
     has_super: hasSuper,
+    has_spawn_protection: hasSpawnProtection,
     weapon,
   } = player;
   const bodyZ = 10;
   const half = tankSize / 2;
+
+  // неуязвимость после респавна — мигающая полупрозрачность, чтобы было
+  // видно кто ещё не может получать урон
+  const spawnAlpha = hasSpawnProtection ? 0.5 + 0.4 * Math.sin((t ?? 0) * 14) : 1;
+  ctx.save();
+  ctx.globalAlpha = spawnAlpha;
 
   // тень корпуса на полу
   ctx.fillStyle = "rgba(0,0,0,0.4)";
@@ -470,6 +619,7 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   ctx.fillStyle = hpRatio > 0.3 ? "#22c55e" : "#ef4444";
   ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth * hpRatio, barHeight);
   ctx.shadowColor = "transparent";
+  ctx.restore();
 }
 
 export function drawParticles3D(ctx, particles) {

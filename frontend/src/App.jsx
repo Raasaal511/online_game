@@ -189,6 +189,8 @@ const styles = {
     padding: "16px",
     fontFamily,
     background: "radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 60%, #060a14 100%)",
+    userSelect: "none",
+    WebkitUserSelect: "none",
   },
   badge: {
     fontSize: "11px",

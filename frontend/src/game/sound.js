@@ -125,6 +125,24 @@ export function playPickupSound() {
   }
 }
 
+export function playWallHitSound() {
+  try {
+    playNoise({ duration: 0.1, volume: 0.15, filterFreq: 800 });
+    playTone({ freq: 180, freqEnd: 90, duration: 0.1, type: "square", volume: 0.1 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playWallBreakSound() {
+  try {
+    playNoise({ duration: 0.3, volume: 0.28, filterFreq: 2000 });
+    playTone({ freq: 120, freqEnd: 40, duration: 0.25, type: "sawtooth", volume: 0.15 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 export function playBombWarningSound() {
   try {
     playTone({ freq: 700, duration: 0.1, type: "square", volume: 0.06 });
