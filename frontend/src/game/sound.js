@@ -64,10 +64,38 @@ function playNoise({ duration, volume = 0.2, filterFreq = 1000 }) {
 }
 
 export function playShotSound() {
+  // танковый выстрел: басовый "удар" (низкий sawtooth) + шумовой хлопок сверху —
+  // вместе читается заметно мощнее прежнего одиночного тона
   try {
-    playTone({ freq: 220, freqEnd: 80, duration: 0.12, type: "square", volume: 0.15 });
+    playTone({ freq: 150, freqEnd: 45, duration: 0.16, type: "sawtooth", volume: 0.22 });
+    playNoise({ duration: 0.08, volume: 0.18, filterFreq: 2500 });
   } catch (e) {
     /* аудио может быть недоступно до первого пользовательского жеста */
+  }
+}
+
+export function playMinigunSound() {
+  try {
+    playTone({ freq: 320, freqEnd: 160, duration: 0.05, type: "square", volume: 0.1 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playFlamethrowerSound() {
+  try {
+    playNoise({ duration: 0.12, volume: 0.08, filterFreq: 900 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playRocketLaunchSound() {
+  try {
+    playTone({ freq: 90, freqEnd: 40, duration: 0.3, type: "sawtooth", volume: 0.2 });
+    playNoise({ duration: 0.2, volume: 0.12, filterFreq: 1200 });
+  } catch (e) {
+    /* ignore */
   }
 }
 
@@ -79,10 +107,11 @@ export function playHitSound() {
   }
 }
 
-export function playExplosionSound() {
+export function playExplosionSound(big = false) {
   try {
-    playNoise({ duration: 0.4, volume: 0.25, filterFreq: 1500 });
-    playTone({ freq: 100, freqEnd: 30, duration: 0.35, type: "sawtooth", volume: 0.18 });
+    const mult = big ? 1.8 : 1;
+    playNoise({ duration: 0.4 * mult, volume: 0.25 * mult, filterFreq: 1500 });
+    playTone({ freq: 100, freqEnd: 25, duration: 0.35 * mult, type: "sawtooth", volume: 0.18 * mult });
   } catch (e) {
     /* ignore */
   }
@@ -91,6 +120,14 @@ export function playExplosionSound() {
 export function playPickupSound() {
   try {
     playTone({ freq: 523, freqEnd: 784, duration: 0.15, type: "sine", volume: 0.15 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playBombWarningSound() {
+  try {
+    playTone({ freq: 700, duration: 0.1, type: "square", volume: 0.06 });
   } catch (e) {
     /* ignore */
   }

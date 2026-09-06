@@ -15,6 +15,7 @@ from app.game.entities import (
     Bullet,
     Pickup,
     Trap,
+    Bomb,
     FIRE_COOLDOWN,
     BULLET_SPEED,
     TANK_ACCEL,
@@ -25,6 +26,29 @@ from app.game.entities import (
     COLLISION_DAMAGE,
     COLLISION_PUSHBACK,
     SPEED_BOOST_DURATION,
+    WEAPON_PICKUP_DURATION,
+    MINIGUN_COOLDOWN,
+    MINIGUN_DAMAGE,
+    MINIGUN_SPEED,
+    MINIGUN_SIZE,
+    FLAMETHROWER_COOLDOWN,
+    FLAMETHROWER_RANGE,
+    FLAMETHROWER_CONE_HALF_ANGLE,
+    FLAMETHROWER_TICK_DAMAGE,
+    FLAMETHROWER_BURN_DURATION,
+    FLAMETHROWER_BURN_TICK_DAMAGE,
+    FLAMETHROWER_BURN_INTERVAL,
+    ROCKET_COOLDOWN,
+    ROCKET_SPEED,
+    ROCKET_SIZE,
+    ROCKET_DIRECT_DAMAGE,
+    ROCKET_SPLASH_RADIUS,
+    ROCKET_SPLASH_DAMAGE,
+    BOMB_MIN_INTERVAL,
+    BOMB_MAX_INTERVAL,
+    BOMB_FUSE_TIME,
+    BOMB_DAMAGE,
+    BOMB_RADIUS,
 )
 from app.game.map import (
     FIELD_WIDTH,
@@ -47,7 +71,7 @@ MAX_PLAYERS = 10
 
 PICKUP_MAX_COUNT = 5
 PICKUP_SPAWN_INTERVAL = 8.0
-PICKUP_KINDS = ["heal", "armor", "damage", "speed"]
+PICKUP_KINDS = ["heal", "armor", "damage", "speed", "minigun", "flamethrower", "rocket"]
 ARMOR_DURATION = 12.0
 ARMOR_REDUCTION = 0.5  # снижение получаемого урона на 50%
 DAMAGE_BOOST_DURATION = 12.0
@@ -62,6 +86,22 @@ RESPAWN_DELAY = 2.0  # сек до респавна после смерти
 
 TOP_N = 3
 
+_WEAPON_COOLDOWN = {
+    "cannon": FIRE_COOLDOWN,
+    "minigun": MINIGUN_COOLDOWN,
+    "flamethrower": FLAMETHROWER_COOLDOWN,
+    "rocket": ROCKET_COOLDOWN,
+}
+
+
+def _angle_diff(a: float, b: float) -> float:
+    diff = b - a
+    while diff > math.pi:
+        diff -= 2 * math.pi
+    while diff < -math.pi:
+        diff += 2 * math.pi
+    return diff
+
 
 class GameRoom:
     def __init__(self) -> None:
@@ -71,11 +111,14 @@ class GameRoom:
         self.traps: dict[str, Trap] = {
             trap.id: trap for trap in (Trap.new(x, y) for x, y in TRAP_POINTS)
         }
+        self.bombs: dict[str, Bomb] = {}
         self.connections: dict[str, WebSocket] = {}
         self.started_at = time.monotonic()
         self._last_pickup_spawn = 0.0
         self._super_pickup_id: str | None = None
         self._super_pickup_respawn_at = 5.0  # первый спавн вскоре после старта комнаты
+        self._next_bomb_at = time.monotonic() + random.uniform(BOMB_MIN_INTERVAL, BOMB_MAX_INTERVAL)
+        self._explosions: list[dict] = []  # разовые события взрыва для текущего тика (визуал на клиенте)
         self._pending_respawns: dict[str, float] = {}  # player_id -> respawn_at
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -100,13 +143,18 @@ class GameRoom:
     def _tick(self) -> None:
         now = time.monotonic()
         elapsed = self._elapsed()
+        self._explosions = []  # разовые события этого тика, не накапливаются
 
         self._spawn_pickups(elapsed)
         self._spawn_super_pickup(now)
+        self._spawn_bombs(now)
+        self._process_bombs(now)
         self._process_respawns(now)
         self._move_players(now)
         self._move_bullets()
         self._check_bullet_collisions()
+        self._process_flamethrower(now)
+        self._process_burning(now)
         self._check_pickup_collisions(now)
         self._check_trap_collisions(now)
         self._check_tank_collisions(now)
@@ -136,14 +184,19 @@ class GameRoom:
             new_x = player.x + player.vx * DT
             new_y = player.y + player.vy * DT
 
-            half = player.size / 2
-            new_x = clamp(new_x, half, FIELD_WIDTH - half)
-            new_y = clamp(new_y, half, FIELD_HEIGHT - half)
+            # НЕ клампим к границам поля здесь: периметр уже полностью закрыт
+            # стенами-границами (WALLS), и коллизия с ними ниже — единственный
+            # источник истины. Раньше clamp() подгонял позицию вплотную к
+            # границе поля, которая физически лежит ВНУТРИ толщины стены
+            # (WALL_THICKNESS=24px) — из-за этого rect_intersects_walls всегда
+            # возвращала True на границе, движение блокировалось навсегда, и
+            # игрок застревал у края карты без возможности отъехать назад.
 
             if not rect_intersects_walls(new_x, player.y, player.size):
                 player.x = new_x
             else:
                 player.vx = 0.0
+
             if not rect_intersects_walls(player.x, new_y, player.size):
                 player.y = new_y
             else:
@@ -163,8 +216,12 @@ class GameRoom:
         sub_dt = DT / substeps
 
         for bullet in self.bullets.values():
+            if bullet.kind == "flamethrower":
+                continue  # огнемёт не создаёт снарядов, обрабатывается отдельно
+
             half = bullet.size / 2
             bounced_this_tick = False
+            hit_inner_wall = False
             for _ in range(substeps):
                 bullet.x += bullet.vx * sub_dt
                 bullet.y += bullet.vy * sub_dt
@@ -172,6 +229,15 @@ class GameRoom:
                 wall = _find_intersecting_wall(bullet.x, bullet.y, bullet.size)
                 if wall is None:
                     continue
+
+                if not wall.is_border:
+                    # внутренние укрытия крепости гасят пулю без рикошета —
+                    # хаотичные отскоки внутри тесных проходов сбивали с толку;
+                    # рикошет остаётся только предсказуемым "мячом от стены поля"
+                    hit_inner_wall = True
+                    if bullet.kind == "rocket":
+                        self._explode_rocket(bullet)
+                    break
 
                 # определяем сторону удара по глубине проникновения в каждую
                 # ось и отражаем только соответствующую компоненту скорости
@@ -196,9 +262,14 @@ class GameRoom:
                 if not bounced_this_tick:
                     bounced_this_tick = True
                     if bullet.bounces_left <= 0:
+                        if bullet.kind == "rocket":
+                            self._explode_rocket(bullet)
                         dead_bullets.append(bullet.id)
                         break
                     bullet.bounces_left -= 1
+
+            if hit_inner_wall:
+                dead_bullets.append(bullet.id)
 
         for bid in dead_bullets:
             self.bullets.pop(bid, None)
@@ -206,20 +277,69 @@ class GameRoom:
     def _check_bullet_collisions(self) -> None:
         dead_bullets = []
         for bullet in self.bullets.values():
+            if bullet.kind == "flamethrower":
+                continue
             for player in self.players.values():
                 if not player.alive or player.id == bullet.owner_id:
                     continue
                 if aabb_collides_point(player, bullet):
-                    self._apply_damage(player, bullet)
+                    if bullet.kind == "rocket":
+                        self._explode_rocket(bullet)
+                    else:
+                        self._apply_damage(player, bullet.damage, bullet.owner_id)
                     dead_bullets.append(bullet.id)
                     break
 
         for bid in dead_bullets:
             self.bullets.pop(bid, None)
 
-    def _apply_damage(self, player: Player, bullet: Bullet) -> None:
+    def _explode_rocket(self, bullet: Bullet) -> None:
+        # сплэш-урон по всем живым в радиусе взрыва, урон убывает с расстоянием
+        # чисто линейно от ROCKET_SPLASH_DAMAGE до 0 на границе радиуса
+        for player in self.players.values():
+            if not player.alive:
+                continue
+            dist = math.hypot(player.x - bullet.x, player.y - bullet.y)
+            if dist > ROCKET_SPLASH_RADIUS:
+                continue
+            falloff = 1 - dist / ROCKET_SPLASH_RADIUS
+            dmg = round(ROCKET_SPLASH_DAMAGE * falloff)
+            if dmg > 0:
+                self._apply_damage(player, dmg, bullet.owner_id)
+        self._explosions.append({"x": bullet.x, "y": bullet.y, "radius": ROCKET_SPLASH_RADIUS})
+
+    def _process_flamethrower(self, now: float) -> None:
+        # огнемёт не создаёт снарядов — конус проверяется напрямую каждый тик,
+        # пока игрок удерживает кнопку стрельбы (flame_active_until обновляется в try_shoot)
+        for player in self.players.values():
+            if not player.alive or now >= player.flame_active_until:
+                continue
+            for target in self.players.values():
+                if target.id == player.id or not target.alive:
+                    continue
+                dist = math.hypot(target.x - player.x, target.y - player.y)
+                if dist > FLAMETHROWER_RANGE:
+                    continue
+                angle_to_target = math.atan2(target.y - player.y, target.x - player.x)
+                diff = abs(_angle_diff(player.turret_angle, angle_to_target))
+                if diff > FLAMETHROWER_CONE_HALF_ANGLE:
+                    continue
+                self._apply_damage(target, FLAMETHROWER_TICK_DAMAGE, player.id)
+                target.burn_until = now + FLAMETHROWER_BURN_DURATION
+                target.burn_owner_id = player.id
+
+    def _process_burning(self, now: float) -> None:
+        for player in self.players.values():
+            if not player.alive or now >= player.burn_until:
+                continue
+            if now - player.last_burn_tick_at < FLAMETHROWER_BURN_INTERVAL:
+                continue
+            player.last_burn_tick_at = now
+            self._apply_damage(player, FLAMETHROWER_BURN_TICK_DAMAGE, player.burn_owner_id)
+
+    def _apply_damage(self, player: Player, damage: int, killer_id: str) -> None:
         now = time.monotonic()
-        dmg = bullet.damage
+        dmg = damage
         if now < player.super_until:
             dmg = round(dmg * (1 - SUPER_ARMOR_REDUCTION))
         elif now < player.armor_until:
@@ -228,7 +348,7 @@ class GameRoom:
 
         if player.hp <= 0:
             player.hp = 0
-            self._kill_player(player, bullet.owner_id)
+            self._kill_player(player, killer_id)
 
     def _kill_player(self, player: Player, killer_id: str) -> None:
         player.alive = False
@@ -295,6 +415,10 @@ class GameRoom:
         player.slow_until = 0.0
         player.super_until = 0.0
         player.damage = 20
+        player.weapon = "cannon"
+        player.weapon_until = 0.0
+        player.flame_active_until = 0.0
+        player.burn_until = 0.0
         # kills НЕ обнуляем: это счётчик за всю сессию соединения, а не за
         # одну жизнь — раньше сбрасывался на респавне, из-за чего ScoreBoard
         # и запись в топ-3 при повторной смерти теряли уже накопленные фраги
@@ -363,22 +487,103 @@ class GameRoom:
             player.damage_until = now + SUPER_DURATION
             player.damage = round(20 * SUPER_DAMAGE_MULT)
             player.hp = player.max_hp
+        elif pickup.kind in ("minigun", "flamethrower", "rocket"):
+            player.weapon = pickup.kind
+            player.weapon_until = now + WEAPON_PICKUP_DURATION
+            player.last_shot_at = -999.0  # можно стрелять новым оружием сразу, без остатка кулдауна
+
+    def _spawn_bombs(self, now: float) -> None:
+        if now < self._next_bomb_at:
+            return
+        self._next_bomb_at = now + random.uniform(BOMB_MIN_INTERVAL, BOMB_MAX_INTERVAL)
+
+        for _ in range(20):
+            x = random.uniform(80, FIELD_WIDTH - 80)
+            y = random.uniform(80, FIELD_HEIGHT - 80)
+            if not rect_intersects_walls(x, y, BOMB_RADIUS * 0.5):
+                bomb = Bomb.new(x, y, now)
+                self.bombs[bomb.id] = bomb
+                break
+
+    def _process_bombs(self, now: float) -> None:
+        exploded = []
+        for bomb in self.bombs.values():
+            if now - bomb.spawned_at < BOMB_FUSE_TIME:
+                continue
+            exploded.append(bomb.id)
+            for player in self.players.values():
+                if not player.alive:
+                    continue
+                dist = math.hypot(player.x - bomb.x, player.y - bomb.y)
+                if dist > BOMB_RADIUS:
+                    continue
+                falloff = 1 - dist / BOMB_RADIUS
+                dmg = round(BOMB_DAMAGE * falloff)
+                if dmg > 0:
+                    self._apply_damage(player, dmg, player.id)  # авиаудар не засчитывает фраг никому
+            self._explosions.append({"x": bomb.x, "y": bomb.y, "radius": bomb.radius})
+
+        for bid in exploded:
+            self.bombs.pop(bid, None)
 
     def try_shoot(self, player_id: str) -> None:
         player = self.players.get(player_id)
         if player is None or not player.alive:
             return
         now = time.monotonic()
-        if now - player.last_shot_at < FIRE_COOLDOWN:
+
+        weapon = player.weapon if now < player.weapon_until else "cannon"
+        if weapon != player.weapon:
+            player.weapon = "cannon"
+
+        cooldown = _WEAPON_COOLDOWN.get(weapon, FIRE_COOLDOWN)
+        if now - player.last_shot_at < cooldown:
             return
         player.last_shot_at = now
 
         if now >= player.damage_until:
             player.damage = 20
 
+        # множитель урона (damage/super boost) применяется поверх базового
+        # урона оружия, а не только к пушке — иначе смена оружия "теряла" бы бонус
+        boost_mult = player.damage / 20 if player.damage != 20 else 1.0
+
+        if weapon == "flamethrower":
+            player.flame_active_until = now + 0.2  # держится, пока клавиша зажата (клиент шлёт shoot часто)
+            return
+
         muzzle_x = player.x + math.cos(player.turret_angle) * (player.size / 2 + 6)
         muzzle_y = player.y + math.sin(player.turret_angle) * (player.size / 2 + 6)
-        bullet = Bullet.new(player.id, muzzle_x, muzzle_y, player.turret_angle, player.damage)
+
+        if weapon == "minigun":
+            spread = random.uniform(-0.05, 0.05)
+            bullet = Bullet.new(
+                player.id,
+                muzzle_x,
+                muzzle_y,
+                player.turret_angle + spread,
+                round(MINIGUN_DAMAGE * boost_mult),
+                speed=MINIGUN_SPEED,
+                size=MINIGUN_SIZE,
+                bounces=0,
+                kind="minigun",
+            )
+        elif weapon == "rocket":
+            bullet = Bullet.new(
+                player.id,
+                muzzle_x,
+                muzzle_y,
+                player.turret_angle,
+                round(ROCKET_DIRECT_DAMAGE * boost_mult),
+                speed=ROCKET_SPEED,
+                size=ROCKET_SIZE,
+                bounces=0,
+                kind="rocket",
+            )
+        else:
+            bullet = Bullet.new(
+                player.id, muzzle_x, muzzle_y, player.turret_angle, player.damage, kind="cannon"
+            )
         self.bullets[bullet.id] = bullet
 
     def _check_trap_collisions(self, now: float) -> None:
@@ -525,17 +730,40 @@ class GameRoom:
                     "has_speed_boost": now < p.speed_boost_until,
                     "has_slow": now < p.slow_until,
                     "has_super": now < p.super_until,
+                    "weapon": p.weapon if now < p.weapon_until else "cannon",
+                    "is_flaming": now < p.flame_active_until,
+                    "is_burning": now < p.burn_until,
                 }
                 for p in self.players.values()
             ],
             "bullets": [
-                {"id": b.id, "x": round(b.x, 1), "y": round(b.y, 1), "size": b.size}
+                {
+                    "id": b.id,
+                    "owner_id": b.owner_id,
+                    "x": round(b.x, 1),
+                    "y": round(b.y, 1),
+                    "vx": round(b.vx, 1),
+                    "vy": round(b.vy, 1),
+                    "size": b.size,
+                    "kind": b.kind,
+                }
                 for b in self.bullets.values()
             ],
             "pickups": [
                 {"id": pu.id, "x": pu.x, "y": pu.y, "kind": pu.kind}
                 for pu in self.pickups.values()
             ],
+            "bombs": [
+                {
+                    "id": bomb.id,
+                    "x": bomb.x,
+                    "y": bomb.y,
+                    "fuse_progress": min(1.0, (now - bomb.spawned_at) / BOMB_FUSE_TIME),
+                    "radius": bomb.radius,
+                }
+                for bomb in self.bombs.values()
+            ],
+            "explosions": self._explosions,
         }
 
         # сериализуем payload один раз за тик (не по разу на каждого клиента) —

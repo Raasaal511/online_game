@@ -2,8 +2,16 @@
 // парящие дропы и тени на полу. Игровые координаты (x, y) остаются 2D-полем истины
 // с сервера — здесь только визуальная проекция и слой глубины (z) для отрисовки.
 
+import { drawIcon } from "./icons.js";
+
 const TILT = 0.62; // вертикальное сжатие пола/объектов, имитирует наклон камеры
 const LIGHT_DIR = { x: -0.5, y: -1 }; // направление "света" для боковых граней
+
+const WEAPON_BADGE_COLORS = {
+  minigun: "#facc15",
+  flamethrower: "#f97316",
+  rocket: "#ef4444",
+};
 
 // экранная высота объекта с данной игровой высотой z (0 = на полу)
 export function screenY(y, z = 0) {
@@ -77,10 +85,11 @@ export function drawWall3D(ctx, wall) {
   ctx.strokeRect(x + 0.5, topY + 0.5, width - 1, height - 1);
 }
 
-export function drawPickup3D(ctx, pickup, colors, labels, t) {
+export function drawPickup3D(ctx, pickup, colors, t) {
   const bob = Math.sin(t * 3 + pickup.x * 0.05) * 4;
   const z = 14 + bob;
   const shadowScale = 1 - z / 60;
+  const isSuper = pickup.kind === "super";
 
   // тень на полу
   ctx.fillStyle = "rgba(0,0,0,0.4)";
@@ -89,26 +98,38 @@ export function drawPickup3D(ctx, pickup, colors, labels, t) {
   ctx.fill();
 
   const py = screenY(pickup.y, z);
+
+  if (isSuper) {
+    // редкий power-up получает дополнительное пульсирующее кольцо, чтобы
+    // выделяться среди обычных дропов ещё до подбора
+    const pulse = 0.5 + 0.5 * Math.sin(t * 5);
+    const ring = ctx.createRadialGradient(pickup.x, py, 4, pickup.x, py, 18 + pulse * 4);
+    ring.addColorStop(0, "rgba(244, 114, 182, 0.5)");
+    ring.addColorStop(1, "rgba(244, 114, 182, 0)");
+    ctx.fillStyle = ring;
+    ctx.beginPath();
+    ctx.arc(pickup.x, py, 18 + pulse * 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   ctx.save();
   ctx.translate(pickup.x, py);
 
-  const grad = ctx.createRadialGradient(-2, -2, 1, 0, 0, 10);
+  const radius = isSuper ? 12 : 10;
+  const grad = ctx.createRadialGradient(-2, -2, 1, 0, 0, radius);
   const color = colors[pickup.kind] || "#fff";
   grad.addColorStop(0, "#ffffff");
   grad.addColorStop(0.4, color);
   grad.addColorStop(1, color);
   ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.arc(0, 0, 10, 0, Math.PI * 2);
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = "rgba(255,255,255,0.4)";
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  ctx.fillStyle = "white";
-  ctx.font = "bold 9px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText(labels[pickup.kind] || "", 0, 3);
+  drawIcon(ctx, pickup.kind, "#0f172a", 0.85);
   ctx.restore();
 }
 
@@ -145,9 +166,29 @@ export function drawTrap3D(ctx, trap, t) {
   }
 }
 
+const BULLET_PALETTE = {
+  cannon: { glow: "250, 204, 21", core: ["#fff7cc", "#facc15", "#b45309"], stroke: "#7c2d12" },
+  minigun: { glow: "253, 224, 71", core: ["#fffbeb", "#fde047", "#a16207"], stroke: "#713f12" },
+  rocket: { glow: "239, 68, 68", core: ["#fecaca", "#ef4444", "#7f1d1d"], stroke: "#450a0a" },
+};
+
 export function drawBullet3D(ctx, bullet) {
   const z = 10;
-  const r = Math.max(bullet.size, 8);
+  const kind = bullet.kind || "cannon";
+  const palette = BULLET_PALETTE[kind] || BULLET_PALETTE.cannon;
+  const isMinigun = kind === "minigun";
+  const isRocket = kind === "rocket";
+  const r = isMinigun ? Math.max(bullet.size, 5) : Math.max(bullet.size, 8);
+
+  // дымный след ракеты — рисуется первым, чтобы оказаться под самим снарядом
+  if (isRocket) {
+    ctx.fillStyle = "rgba(100, 116, 139, 0.35)";
+    const trailX = bullet.x - Math.sign(bullet.vx || 1) * 14;
+    const trailY = bullet.y - Math.sign(bullet.vy || 0) * 14;
+    ctx.beginPath();
+    ctx.ellipse(trailX, trailY, r * 1.1, r * 0.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // тень
   ctx.fillStyle = "rgba(0,0,0,0.3)";
@@ -157,29 +198,126 @@ export function drawBullet3D(ctx, bullet) {
 
   const py = screenY(bullet.y, z);
 
-  // свечение
-  const glow = ctx.createRadialGradient(bullet.x, py, 0, bullet.x, py, r * 2.2);
-  glow.addColorStop(0, "rgba(250, 204, 21, 0.55)");
-  glow.addColorStop(1, "rgba(250, 204, 21, 0)");
+  // свечение (слабее у пулемётных пуль — они мелкие и частые, сильный glow
+  // на каждой создавал бы "кашу" на экране при высокой скорострельности)
+  const glowMult = isMinigun ? 1.4 : 2.2;
+  const glowAlpha = isMinigun ? 0.35 : 0.55;
+  const glow = ctx.createRadialGradient(bullet.x, py, 0, bullet.x, py, r * glowMult);
+  glow.addColorStop(0, `rgba(${palette.glow}, ${glowAlpha})`);
+  glow.addColorStop(1, `rgba(${palette.glow}, 0)`);
   ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(bullet.x, py, r * 2.2, 0, Math.PI * 2);
+  ctx.arc(bullet.x, py, r * glowMult, 0, Math.PI * 2);
   ctx.fill();
 
   const grad = ctx.createRadialGradient(bullet.x - 2, py - 2, 0.5, bullet.x, py, r);
-  grad.addColorStop(0, "#fff7cc");
-  grad.addColorStop(0.5, "#facc15");
-  grad.addColorStop(1, "#b45309");
+  grad.addColorStop(0, palette.core[0]);
+  grad.addColorStop(0.5, palette.core[1]);
+  grad.addColorStop(1, palette.core[2]);
   ctx.beginPath();
   ctx.arc(bullet.x, py, r, 0, Math.PI * 2);
   ctx.fillStyle = grad;
   ctx.fill();
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = "#7c2d12";
+  ctx.lineWidth = isMinigun ? 1 : 1.5;
+  ctx.strokeStyle = palette.stroke;
   ctx.stroke();
 }
 
-export function drawTank3D(ctx, player, isMe, tankSize, t) {
+export function drawFlameCone3D(ctx, player, t) {
+  const { x, y, turret_angle: angle } = player;
+  const range = 130;
+  const halfAngle = 0.45;
+  const flicker = 0.7 + 0.3 * Math.sin(t * 25 + x * 0.1);
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+
+  const grad = ctx.createRadialGradient(0, 0, 4, 0, 0, range);
+  grad.addColorStop(0, `rgba(255, 241, 191, ${0.85 * flicker})`);
+  grad.addColorStop(0.35, `rgba(251, 146, 60, ${0.65 * flicker})`);
+  grad.addColorStop(0.75, `rgba(239, 68, 68, ${0.35 * flicker})`);
+  grad.addColorStop(1, "rgba(239, 68, 68, 0)");
+  ctx.fillStyle = grad;
+
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.arc(0, 0, range, -halfAngle, halfAngle);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+export function drawMuzzleFlash3D(ctx, x, y, angle, strength) {
+  if (strength <= 0) return;
+  const len = 14 + strength * 10;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  const grad = ctx.createRadialGradient(len * 0.3, 0, 1, len * 0.3, 0, len);
+  grad.addColorStop(0, `rgba(255, 247, 204, ${0.9 * strength})`);
+  grad.addColorStop(0.5, `rgba(250, 204, 21, ${0.6 * strength})`);
+  grad.addColorStop(1, "rgba(250, 204, 21, 0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.ellipse(len * 0.3, 0, len, len * 0.45, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+export function drawBomb3D(ctx, bomb, t) {
+  const pulse = 0.5 + 0.5 * Math.sin(t * 12);
+  const ringRadius = bomb.radius * (0.3 + bomb.fuse_progress * 0.7);
+
+  // предупреждающий круг на полу — растёт по мере приближения взрыва
+  ctx.strokeStyle = `rgba(239, 68, 68, ${0.4 + pulse * 0.4})`;
+  ctx.lineWidth = 3;
+  ctx.setLineDash([10, 6]);
+  ctx.beginPath();
+  ctx.arc(bomb.x, bomb.y, ringRadius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = `rgba(239, 68, 68, ${0.08 + bomb.fuse_progress * 0.12})`;
+  ctx.beginPath();
+  ctx.arc(bomb.x, bomb.y, ringRadius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // мигающий маркер в центре — учащается по мере приближения детонации
+  const blinkSpeed = 4 + bomb.fuse_progress * 12;
+  const blink = Math.sin(t * blinkSpeed) > 0;
+  if (blink) {
+    ctx.fillStyle = "#fecaca";
+    ctx.beginPath();
+    ctx.arc(bomb.x, bomb.y - 10, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+export function drawExplosion3D(ctx, explosion, age) {
+  // age: 0..1, прогресс расширения ударной волны после взрыва
+  if (age >= 1) return;
+  const radius = explosion.radius * (0.3 + age * 0.9);
+  const alpha = 1 - age;
+
+  const grad = ctx.createRadialGradient(explosion.x, explosion.y, 0, explosion.x, explosion.y, radius);
+  grad.addColorStop(0, `rgba(255, 247, 204, ${0.8 * alpha})`);
+  grad.addColorStop(0.4, `rgba(251, 146, 60, ${0.6 * alpha})`);
+  grad.addColorStop(0.7, `rgba(239, 68, 68, ${0.35 * alpha})`);
+  grad.addColorStop(1, "rgba(239, 68, 68, 0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(explosion.x, explosion.y, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 * alpha})`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(explosion.x, explosion.y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   const {
     x,
     y,
@@ -190,6 +328,7 @@ export function drawTank3D(ctx, player, isMe, tankSize, t) {
     has_speed_boost: hasSpeedBoost,
     has_slow: hasSlow,
     has_super: hasSuper,
+    weapon,
   } = player;
   const bodyZ = 10;
   const half = tankSize / 2;
@@ -282,6 +421,9 @@ export function drawTank3D(ctx, player, isMe, tankSize, t) {
   ctx.fill();
 
   ctx.rotate(angle);
+  // отдача: ствол на короткое время "уезжает" назад при выстреле — kickback
+  // затухает от 1 (сразу после выстрела) до 0, создаёт ощущение мощности
+  const barrelPullback = -kickback * 5;
   const turretGrad = ctx.createRadialGradient(-3, -3, 1, 0, 0, tankSize / 3);
   turretGrad.addColorStop(0, "#334155");
   turretGrad.addColorStop(1, "#0f172a");
@@ -290,10 +432,26 @@ export function drawTank3D(ctx, player, isMe, tankSize, t) {
   ctx.arc(0, 0, tankSize / 3, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = "#1e293b";
-  ctx.fillRect(0, -3, tankSize / 2 + 8, 6);
+  ctx.fillRect(barrelPullback, -3, tankSize / 2 + 8, 6);
   ctx.fillStyle = "#0f172a";
-  ctx.fillRect(0, -1.5, tankSize / 2 + 8, 3);
+  ctx.fillRect(barrelPullback, -1.5, tankSize / 2 + 8, 3);
   ctx.restore();
+
+  // бейдж подобранного оружия над башней — короткая цветная метка
+  if (weapon && weapon !== "cannon") {
+    const badgeColor = WEAPON_BADGE_COLORS[weapon] || "#facc15";
+    ctx.save();
+    ctx.translate(x + half + 4, topY - half - 4);
+    ctx.fillStyle = badgeColor;
+    ctx.beginPath();
+    ctx.arc(0, 0, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(15, 23, 42, 0.8)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    drawIcon(ctx, weapon, "#0f172a", 0.55);
+    ctx.restore();
+  }
 
   // ник и HP-бар — billboard, не наклоняются вместе с полом
   ctx.fillStyle = "white";

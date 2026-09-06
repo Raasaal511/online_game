@@ -9,11 +9,13 @@ WALL_THICKNESS = 24
 # внутреннее укреплённое ядро с четырьмя проходами и рассредоточенные
 # диагональные укрытия в средней зоне. Рассчитана на до 10 игроков.
 WALLS: list[Wall] = [
-    # внешние границы (чтобы танки и снаряды не улетали за карту)
-    Wall(0, 0, FIELD_WIDTH, WALL_THICKNESS),
-    Wall(0, FIELD_HEIGHT - WALL_THICKNESS, FIELD_WIDTH, WALL_THICKNESS),
-    Wall(0, 0, WALL_THICKNESS, FIELD_HEIGHT),
-    Wall(FIELD_WIDTH - WALL_THICKNESS, 0, WALL_THICKNESS, FIELD_HEIGHT),
+    # внешние границы (чтобы танки и снаряды не улетали за карту) — единственные
+    # стены, от которых рикошетят пули (is_border=True); внутренние укрытия
+    # просто гасят пулю, чтобы рикошет не был хаотичным внутри крепости
+    Wall(0, 0, FIELD_WIDTH, WALL_THICKNESS, is_border=True),
+    Wall(0, FIELD_HEIGHT - WALL_THICKNESS, FIELD_WIDTH, WALL_THICKNESS, is_border=True),
+    Wall(0, 0, WALL_THICKNESS, FIELD_HEIGHT, is_border=True),
+    Wall(FIELD_WIDTH - WALL_THICKNESS, 0, WALL_THICKNESS, FIELD_HEIGHT, is_border=True),
 
     # центральное кольцевое укрепление с 4 проходами (крепость)
     Wall(FIELD_WIDTH / 2 - 180, FIELD_HEIGHT / 2 - 140, 140, 30),

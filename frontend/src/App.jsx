@@ -8,6 +8,20 @@ import { colors, panel, fontFamily } from "./ui/theme.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
+const WEAPON_LABELS = {
+  cannon: "Пушка",
+  minigun: "Пулемёт",
+  flamethrower: "Огнемёт",
+  rocket: "Ракетница",
+};
+
+const WEAPON_ICONS = {
+  cannon: "🎯",
+  minigun: "🔫",
+  flamethrower: "🔥",
+  rocket: "🚀",
+};
+
 export default function App() {
   const [nickname, setNickname] = useState(null);
   const [leaderboard, setLeaderboard] = useState([]);
@@ -92,6 +106,11 @@ export default function App() {
             <span style={styles.hpText}>{me.hp}/{me.max_hp}</span>
             <span style={styles.statChip}>⚔️ {me.kills}</span>
             <span style={styles.statChip}>💀 {me.deaths}</span>
+            {me.weapon && me.weapon !== "cannon" && (
+              <span style={styles.weaponChip}>
+                {WEAPON_ICONS[me.weapon]} {WEAPON_LABELS[me.weapon] || me.weapon}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -206,6 +225,14 @@ const styles = {
     color: colors.text,
     background: "rgba(255,255,255,0.06)",
     padding: "2px 8px",
+    borderRadius: "6px",
+  },
+  weaponChip: {
+    fontSize: "13px",
+    fontWeight: 700,
+    color: "#0f172a",
+    background: colors.warning,
+    padding: "2px 10px",
     borderRadius: "6px",
   },
 };

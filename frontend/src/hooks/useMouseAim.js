@@ -2,6 +2,9 @@ import { useEffect, useRef } from "react";
 
 export function useMouseAim(canvasRef, onAim, onShoot) {
   const mouseRef = useRef({ x: 0, y: 0 });
+  // держим ли зажатой ЛКМ — нужно для автоматического оружия (пулемёт/огнемёт),
+  // которое должно стрелять непрерывно, пока кнопка удерживается
+  const isFiringRef = useRef(false);
   const onShootRef = useRef(onShoot);
   onShootRef.current = onShoot;
 
@@ -26,7 +29,14 @@ export function useMouseAim(canvasRef, onAim, onShoot) {
     const handlePointerDown = (e) => {
       updateMouse(e);
       if (e.button === 0) {
+        isFiringRef.current = true;
         onShootRef.current();
+      }
+    };
+
+    const handlePointerUp = (e) => {
+      if (e.button === 0) {
+        isFiringRef.current = false;
       }
     };
 
@@ -36,13 +46,16 @@ export function useMouseAim(canvasRef, onAim, onShoot) {
 
     canvas.addEventListener("pointermove", handlePointerMove);
     canvas.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("pointerup", handlePointerUp);
     canvas.addEventListener("contextmenu", handleContextMenu);
     return () => {
       canvas.removeEventListener("pointermove", handlePointerMove);
       canvas.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("pointerup", handlePointerUp);
       canvas.removeEventListener("contextmenu", handleContextMenu);
+      isFiringRef.current = false;
     };
   }, [canvasRef]);
 
-  return mouseRef;
+  return { mouseRef, isFiringRef };
 }
