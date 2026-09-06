@@ -18,11 +18,22 @@ async def game_ws(websocket: WebSocket, nickname: str = Query(default="Player"))
 
     try:
         await websocket.send_json(
-            {"type": "welcome", "player_id": player.id, **game_room.get_map_info()}
+            {
+                "type": "welcome",
+                "player_id": player.id,
+                "chat_history": game_room.get_chat_history(),
+                **game_room.get_map_info(),
+            }
         )
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type")
+
+            # общий rate-limit на любое входящее сообщение — защита от заливки
+            # пакетами (не путать с игровыми кулдаунами оружия/чата, которые
+            # ограничивают геймплейный эффект, а не сетевую нагрузку)
+            if not game_room.allow_message(player.id):
+                continue
 
             if msg_type == "input":
                 direction = data.get("dir", {})
@@ -35,6 +46,10 @@ async def game_ws(websocket: WebSocket, nickname: str = Query(default="Player"))
                 game_room.set_aim(player.id, float(data.get("angle", 0)))
             elif msg_type == "shoot":
                 game_room.try_shoot(player.id)
+            elif msg_type == "chat":
+                entry = game_room.add_chat_message(player.id, str(data.get("text", "")))
+                if entry is not None:
+                    await game_room.broadcast_chat(entry)
 
     except WebSocketDisconnect:
         pass

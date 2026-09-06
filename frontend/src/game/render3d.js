@@ -5,12 +5,73 @@
 import { drawIcon } from "./icons.js";
 
 const TILT = 0.72; // вертикальное сжатие пола/объектов, имитирует наклон камеры
-const LIGHT_DIR = { x: -0.5, y: -1 }; // направление "света" для боковых граней
+// направление света (нормализовано) — грани, обращённые к источнику, светлее;
+// грани, обращённые от него, темнее. Свет "сверху-слева", как классическое
+// студийное освещение — согласуется с тем, что верхняя грань всегда светлее.
+const LIGHT_DIR = normalize({ x: -0.55, y: -0.6 });
+
+function normalize(v) {
+  const len = Math.hypot(v.x, v.y) || 1;
+  return { x: v.x / len, y: v.y / len };
+}
+
+// затемняет/осветляет hex-цвет на factor (-1..1): отрицательный — темнее,
+// положительный — светлее. Используется, чтобы одна и та же боковая грань
+// краснела/синела по-разному в зависимости от того, куда она "смотрит"
+// относительно LIGHT_DIR — это и есть направленное освещение, а не просто
+// фиксированный "тёмный низ / светлый верх".
+function shadeColor(hex, factor) {
+  const num = parseInt(hex.slice(1), 16);
+  let r = (num >> 16) & 0xff;
+  let g = (num >> 8) & 0xff;
+  let b = num & 0xff;
+  if (factor >= 0) {
+    r += (255 - r) * factor;
+    g += (255 - g) * factor;
+    b += (255 - b) * factor;
+  } else {
+    r *= 1 + factor;
+    g *= 1 + factor;
+    b *= 1 + factor;
+  }
+  const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
+  return `rgb(${clamp(r)}, ${clamp(g)}, ${clamp(b)})`;
+}
+
+// яркость грани с нормалью (nx, ny) относительно направления света: 1 —
+// грань смотрит прямо на свет, -1 — прямо от света (в тени)
+function faceLighting(nx, ny) {
+  return nx * LIGHT_DIR.x + ny * LIGHT_DIR.y;
+}
+
+// вектор "от света" — тени вытягиваются в эту сторону от объекта, отбрасывающего тень
+const SHADOW_DIR = { x: -LIGHT_DIR.x, y: -LIGHT_DIR.y };
+
+// Отбрасываемая тень одного объекта (танка) на другой объект (стену/танк)
+// рядом: проецируем эллипс вдоль SHADOW_DIR от основания object'а, длина
+// растёт по мере приближения; рисуется только если receiver действительно
+// близко (иначе тень "летела" бы через всю карту без реальной геометрии).
+export function drawCastShadow(ctx, casterX, casterY, casterHeight, maxReach = 70) {
+  const len = Math.min(maxReach, casterHeight * 2.4);
+  const tipX = casterX + SHADOW_DIR.x * len;
+  const tipY = casterY + SHADOW_DIR.y * len * TILT;
+
+  const grad = ctx.createLinearGradient(casterX, casterY, tipX, tipY);
+  grad.addColorStop(0, "rgba(0, 0, 0, 0.38)");
+  grad.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = casterHeight * 0.7;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(casterX, casterY);
+  ctx.lineTo(tipX, tipY);
+  ctx.stroke();
+}
 
 const WEAPON_BADGE_COLORS = {
-  minigun: "#facc15",
-  flamethrower: "#f97316",
-  rocket: "#ef4444",
+  minigun: "#94a3b8",
+  flamethrower: "#d9772f",
+  rocket: "#c24228",
 };
 
 // экранная высота объекта с данной игровой высотой z (0 = на полу)
@@ -19,14 +80,16 @@ export function screenY(y, z = 0) {
 }
 
 export function drawFloor(ctx, width, height) {
+  // приглушённая, чуть желчно-зелёная сталь вместо чистого сине-серого —
+  // читается более "военно", как бетонный полигон, а не аркадный неон
   const grad = ctx.createLinearGradient(0, 0, 0, height);
-  grad.addColorStop(0, "#243044");
-  grad.addColorStop(1, "#161f2e");
+  grad.addColorStop(0, "#1e2620");
+  grad.addColorStop(1, "#11151a");
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
 
   ctx.save();
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.08)";
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.06)";
   ctx.lineWidth = 1;
   const step = 70;
   for (let x = 0; x <= width; x += step) {
@@ -87,8 +150,20 @@ export function drawWall3D(ctx, wall) {
   );
   ctx.fill();
 
-  // боковая грань (темнее, создаёт объём)
-  ctx.fillStyle = "#334155";
+  // боковые грани, обращённые к камере: южная (нормаль вниз) и восточная
+  // (нормаль вправо) — каждая освещена по-своему в зависимости от того,
+  // насколько она обращена к LIGHT_DIR. Раньше обе красились в один и тот
+  // же фиксированный цвет — теперь это два разных, направленно освещённых тона.
+  const southLight = faceLighting(0, 1); // всегда <=0 при свете сверху — грань в тени
+  const eastLight = faceLighting(1, 0);
+  // тёмный бетон/сталь с холодным оливковым оттенком вместо синевато-серого —
+  // читается суровее, как военное укрепление, а не декоративная преграда
+  const baseSide = "#33362f";
+  const southColor = shadeColor(baseSide, southLight * 0.25);
+  const eastColor = shadeColor(baseSide, eastLight * 0.25);
+
+  // южная грань
+  ctx.fillStyle = southColor;
   ctx.beginPath();
   ctx.moveTo(x, y + height);
   ctx.lineTo(x + width, y + height);
@@ -97,14 +172,31 @@ export function drawWall3D(ctx, wall) {
   ctx.closePath();
   ctx.fill();
 
-  // верхняя грань (светлее, приподнята на depth)
+  // восточная грань (короткий скошенный "срез" по правому краю) — то, чего
+  // не было раньше: без неё объект выглядел как выдавленный только вниз,
+  // а не полноценный параллелепипед со стороны
+  ctx.fillStyle = eastColor;
+  ctx.beginPath();
+  ctx.moveTo(x + width, y + height);
+  ctx.lineTo(x + width, y);
+  ctx.lineTo(x + width, y - depth * TILT);
+  ctx.lineTo(x + width, y + height - depth * TILT);
+  ctx.closePath();
+  ctx.fill();
+  // (восточная грань нулевой толщины в ортографической проекции по x — её
+  // объём даёт только разница освещения на стыке с южной гранью; рисуем
+  // тонкую полоску вдоль правого края верхней грани, чтобы стык читался)
+  ctx.fillRect(x + width - 2, y - depth * TILT, 2, height);
+
+  // верхняя грань (светлее всех — обращена прямо к свету, приподнята на depth)
   const topY = y - depth * TILT;
+  const topLight = faceLighting(0, -1); // нормаль вверх — навстречу свету сверху
   const topGrad = ctx.createLinearGradient(x, topY, x, topY + height);
-  topGrad.addColorStop(0, "#5b6b84");
-  topGrad.addColorStop(1, "#475569");
+  topGrad.addColorStop(0, shadeColor("#4a4d42", 0.2 + topLight * 0.25));
+  topGrad.addColorStop(1, shadeColor("#4a4d42", topLight * 0.2));
   ctx.fillStyle = topGrad;
   ctx.fillRect(x, topY, width, height);
-  ctx.strokeStyle = "rgba(203, 213, 225, 0.25)";
+  ctx.strokeStyle = "rgba(203, 213, 225, 0.18)";
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, topY + 0.5, width - 1, height - 1);
 
@@ -140,7 +232,7 @@ function drawRamp3D(ctx, wall) {
 
   // скошенный въезд (трапеция вместо прямоугольника)
   const inset = width * 0.25;
-  ctx.fillStyle = "#64748b";
+  ctx.fillStyle = "#5a5d4f";
   ctx.beginPath();
   ctx.moveTo(x, y + height);
   ctx.lineTo(x + width, y + height);
@@ -177,7 +269,7 @@ function drawWallRuins3D(ctx, wall) {
   ctx.ellipse(cx, cy + 3, width / 2, height / 2, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.fillStyle = "#3f4c5f";
+  ctx.fillStyle = "#3a3d33";
   const rubbleCount = 5;
   for (let i = 0; i < rubbleCount; i++) {
     const rx = x + ((i * 37) % width);
@@ -270,10 +362,13 @@ export function drawTrap3D(ctx, trap, t) {
   }
 }
 
+// приглушённая, "боевая" палитра снарядов вместо ярко-мультяшной жёлтой:
+// пушка — тлеющая медь/латунь, пулемёт — холодная сталь с искрой, ракета —
+// тёмный тлеющий огонь с копотью, а не чистый неоновый красный
 const BULLET_PALETTE = {
-  cannon: { glow: "250, 204, 21", core: ["#fff7cc", "#facc15", "#b45309"], stroke: "#7c2d12" },
-  minigun: { glow: "253, 224, 71", core: ["#fffbeb", "#fde047", "#a16207"], stroke: "#713f12" },
-  rocket: { glow: "239, 68, 68", core: ["#fecaca", "#ef4444", "#7f1d1d"], stroke: "#450a0a" },
+  cannon: { glow: "217, 140, 60", core: ["#ffe9c2", "#d98c3c", "#7a3d12"], stroke: "#3d1f0a" },
+  minigun: { glow: "203, 213, 225", core: ["#f8fafc", "#94a3b8", "#475569"], stroke: "#1e293b" },
+  rocket: { glow: "194, 65, 40", core: ["#f3b988", "#c24228", "#5c1a10"], stroke: "#2a0d08" },
 };
 
 export function drawBullet3D(ctx, bullet) {
@@ -329,7 +424,7 @@ export function drawBullet3D(ctx, bullet) {
 
 export function drawFlameCone3D(ctx, player, t) {
   const { x, y, turret_angle: angle } = player;
-  const range = 130;
+  const range = 190; // синхронизировано с FLAMETHROWER_RANGE на сервере
   const halfAngle = 0.45;
   const flicker = 0.7 + 0.3 * Math.sin(t * 25 + x * 0.1);
 
@@ -337,18 +432,45 @@ export function drawFlameCone3D(ctx, player, t) {
   ctx.translate(x, y);
   ctx.rotate(angle);
 
+  // базовый широкий конус (как раньше, но длиннее)
   const grad = ctx.createRadialGradient(0, 0, 4, 0, 0, range);
   grad.addColorStop(0, `rgba(255, 241, 191, ${0.85 * flicker})`);
   grad.addColorStop(0.35, `rgba(251, 146, 60, ${0.65 * flicker})`);
   grad.addColorStop(0.75, `rgba(239, 68, 68, ${0.35 * flicker})`);
   grad.addColorStop(1, "rgba(239, 68, 68, 0)");
   ctx.fillStyle = grad;
-
   ctx.beginPath();
   ctx.moveTo(0, 0);
   ctx.arc(0, 0, range, -halfAngle, halfAngle);
   ctx.closePath();
   ctx.fill();
+
+  // 3 "языка" пламени, каждый со своей фазой пульсации и чуть разной длиной —
+  // создаёт эффект живого, неровного огня вместо статичного плоского конуса
+  const tongueCount = 3;
+  for (let i = 0; i < tongueCount; i++) {
+    const tongueAngle = (i - (tongueCount - 1) / 2) * (halfAngle * 0.75);
+    const phase = t * 18 + i * 2.1;
+    const wobble = 0.75 + 0.25 * Math.sin(phase);
+    const tongueRange = range * (0.6 + 0.35 * Math.sin(phase * 0.6));
+    const tongueWidth = 0.14 + 0.05 * Math.sin(phase * 1.3);
+
+    const tGrad = ctx.createRadialGradient(0, 0, 2, 0, 0, tongueRange);
+    tGrad.addColorStop(0, `rgba(255, 247, 214, ${0.9 * wobble})`);
+    tGrad.addColorStop(0.5, `rgba(253, 186, 116, ${0.7 * wobble})`);
+    tGrad.addColorStop(1, "rgba(249, 115, 22, 0)");
+    ctx.fillStyle = tGrad;
+
+    ctx.save();
+    ctx.rotate(tongueAngle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, tongueRange, -tongueWidth, tongueWidth);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
   ctx.restore();
 }
 
@@ -359,9 +481,9 @@ export function drawMuzzleFlash3D(ctx, x, y, angle, strength) {
   ctx.translate(x, y);
   ctx.rotate(angle);
   const grad = ctx.createRadialGradient(len * 0.3, 0, 1, len * 0.3, 0, len);
-  grad.addColorStop(0, `rgba(255, 247, 204, ${0.9 * strength})`);
-  grad.addColorStop(0.5, `rgba(250, 204, 21, ${0.6 * strength})`);
-  grad.addColorStop(1, "rgba(250, 204, 21, 0)");
+  grad.addColorStop(0, `rgba(255, 237, 199, ${0.9 * strength})`);
+  grad.addColorStop(0.5, `rgba(217, 140, 60, ${0.6 * strength})`);
+  grad.addColorStop(1, "rgba(217, 140, 60, 0)");
   ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.ellipse(len * 0.3, 0, len, len * 0.45, 0, 0, Math.PI * 2);
@@ -398,6 +520,61 @@ export function drawBomb3D(ctx, bomb, t) {
   }
 }
 
+export function drawNukeWarning3D(ctx, nuke, t) {
+  // ядерка накрывает ~50% диагонали карты — предупреждение должно быть
+  // однозначно тревожным и видно издалека, не просто "ещё одна бомба"
+  const pulse = 0.5 + 0.5 * Math.sin(t * 6);
+  const fastPulse = 0.5 + 0.5 * Math.sin(t * 16);
+  const radius = nuke.radius * (0.15 + nuke.warning_progress * 0.85);
+
+  // широкая заливка зоны поражения, усиливается по мере приближения взрыва
+  ctx.fillStyle = `rgba(239, 68, 68, ${0.05 + nuke.warning_progress * 0.15})`;
+  ctx.beginPath();
+  ctx.arc(nuke.x, nuke.y, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // двойное кольцо — внешнее медленно пульсирует, внутреннее мигает быстрее
+  // по мере приближения детонации (учащается тревога)
+  ctx.strokeStyle = `rgba(239, 68, 68, ${0.5 + pulse * 0.4})`;
+  ctx.lineWidth = 5;
+  ctx.setLineDash([18, 10]);
+  ctx.beginPath();
+  ctx.arc(nuke.x, nuke.y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = `rgba(250, 204, 21, ${0.4 + fastPulse * 0.5})`;
+  ctx.lineWidth = 3;
+  ctx.setLineDash([8, 8]);
+  ctx.beginPath();
+  ctx.arc(nuke.x, nuke.y, radius * 0.55, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // мигающий символ радиации в центре — учащается по мере приближения взрыва
+  const blinkSpeed = 3 + nuke.warning_progress * 14;
+  const blink = Math.sin(t * blinkSpeed) > 0;
+  if (blink) {
+    ctx.fillStyle = "#fef08a";
+    ctx.save();
+    ctx.translate(nuke.x, nuke.y);
+    for (let i = 0; i < 3; i++) {
+      ctx.save();
+      ctx.rotate((i / 3) * Math.PI * 2);
+      ctx.beginPath();
+      ctx.moveTo(0, -6);
+      ctx.arc(0, 0, 16, -0.5, 0.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.fillStyle = "#7f1d1d";
+    ctx.beginPath();
+    ctx.arc(0, 0, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 export function drawExplosion3D(ctx, explosion, age) {
   // age: 0..1, прогресс расширения ударной волны после взрыва
   if (age >= 1) return;
@@ -405,10 +582,10 @@ export function drawExplosion3D(ctx, explosion, age) {
   const alpha = 1 - age;
 
   const grad = ctx.createRadialGradient(explosion.x, explosion.y, 0, explosion.x, explosion.y, radius);
-  grad.addColorStop(0, `rgba(255, 247, 204, ${0.8 * alpha})`);
-  grad.addColorStop(0.4, `rgba(251, 146, 60, ${0.6 * alpha})`);
-  grad.addColorStop(0.7, `rgba(239, 68, 68, ${0.35 * alpha})`);
-  grad.addColorStop(1, "rgba(239, 68, 68, 0)");
+  grad.addColorStop(0, `rgba(255, 233, 194, ${0.8 * alpha})`);
+  grad.addColorStop(0.4, `rgba(217, 140, 60, ${0.6 * alpha})`);
+  grad.addColorStop(0.7, `rgba(194, 65, 40, ${0.35 * alpha})`);
+  grad.addColorStop(1, "rgba(194, 65, 40, 0)");
   ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.arc(explosion.x, explosion.y, radius, 0, Math.PI * 2);
@@ -461,8 +638,6 @@ export function drawWallHitSpark3D(ctx, hit, age) {
 
 export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   const {
-    x,
-    y,
     turret_angle: angle,
     hp,
     max_hp: maxHp,
@@ -471,10 +646,18 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
     has_slow: hasSlow,
     has_super: hasSuper,
     has_spawn_protection: hasSpawnProtection,
+    is_miniboss: isMiniboss,
     weapon,
   } = player;
-  const bodyZ = 10;
+  const bodyZ = isMiniboss ? 16 : 10; // мини-босс визуально выше обычных танков
   const half = tankSize / 2;
+
+  // при выстреле весь корпус слегка "приседает" назад вдоль ствола — раньше
+  // дёргался только сам ствол, что читалось слабо; это короткая, быстро
+  // затухающая добавка к позиции, не влияющая на реальные игровые координаты
+  const bodyRecoil = kickback * 2.5;
+  const x = player.x - Math.cos(angle) * bodyRecoil;
+  const y = player.y - Math.sin(angle) * bodyRecoil;
 
   // неуязвимость после респавна — мигающая полупрозрачность, чтобы было
   // видно кто ещё не может получать урон
@@ -482,15 +665,38 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   ctx.save();
   ctx.globalAlpha = spawnAlpha;
 
-  // тень корпуса на полу
+  // тень корпуса на полу (крупнее у мини-босса, пропорционально размеру)
   ctx.fillStyle = "rgba(0,0,0,0.4)";
   ctx.beginPath();
   ctx.ellipse(x, y + half * 0.4, tankSize * 0.6, tankSize * 0.28, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  const bodyColor = isMe ? "#22c55e" : "#38bdf8";
-  const bodyColorDark = isMe ? "#15803d" : "#0369a1";
-  const bodyColorLight = isMe ? "#4ade80" : "#7dd3fc";
+  let bodyColor, bodyColorDark, bodyColorLight;
+  if (isMiniboss) {
+    bodyColor = "#991b1b";
+    bodyColorDark = "#450a0a";
+    bodyColorLight = "#dc2626";
+  } else if (isMe) {
+    bodyColor = "#22c55e";
+    bodyColorDark = "#15803d";
+    bodyColorLight = "#4ade80";
+  } else {
+    bodyColor = "#38bdf8";
+    bodyColorDark = "#0369a1";
+    bodyColorLight = "#7dd3fc";
+  }
+
+  // угрожающее пульсирующее свечение вокруг мини-босса — виден издалека
+  if (isMiniboss) {
+    const bossPulse = 0.5 + 0.5 * Math.sin((t ?? 0) * 4);
+    const bossGlow = ctx.createRadialGradient(x, y, half * 0.5, x, y, tankSize * 2);
+    bossGlow.addColorStop(0, `rgba(220, 38, 38, ${0.35 * bossPulse})`);
+    bossGlow.addColorStop(1, "rgba(220, 38, 38, 0)");
+    ctx.fillStyle = bossGlow;
+    ctx.beginPath();
+    ctx.arc(x, y, tankSize * 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   const topY = screenY(y, bodyZ);
 
@@ -510,8 +716,13 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   ctx.save();
   ctx.translate(x, 0);
 
-  // боковая грань корпуса (между полом и приподнятым верхом), даёт объём
-  ctx.fillStyle = bodyColorDark;
+  // боковые грани корпуса, направленно освещённые — южная (низ) и восточная
+  // (правый бок), каждая своим оттенком по faceLighting, вместо одного
+  // плоского bodyColorDark на всю боковину
+  const bodySouthLight = faceLighting(0, 1);
+  const bodyEastLight = faceLighting(1, 0);
+
+  ctx.fillStyle = shadeColor(bodyColorDark, bodySouthLight * 0.2);
   ctx.beginPath();
   ctx.moveTo(-half, y + half);
   ctx.lineTo(half, y + half);
@@ -520,10 +731,14 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   ctx.closePath();
   ctx.fill();
 
-  // верхняя грань корпуса
+  ctx.fillStyle = shadeColor(bodyColorDark, bodyEastLight * 0.2);
+  ctx.fillRect(half - 3, topY - half, 3, tankSize);
+
+  // верхняя грань корпуса — светлее с той стороны, что обращена к источнику
+  const bodyTopLight = faceLighting(0, -1);
   const bodyGrad = ctx.createLinearGradient(-half, topY - half, half, topY + half);
-  bodyGrad.addColorStop(0, bodyColorLight);
-  bodyGrad.addColorStop(1, bodyColor);
+  bodyGrad.addColorStop(0, shadeColor(bodyColorLight, bodyTopLight * 0.2));
+  bodyGrad.addColorStop(1, shadeColor(bodyColor, bodyTopLight * 0.15));
   ctx.fillStyle = bodyGrad;
   ctx.fillRect(-half, topY - half, tankSize, tankSize);
 
@@ -603,20 +818,22 @@ export function drawTank3D(ctx, player, isMe, tankSize, t, kickback = 0) {
   }
 
   // ник и HP-бар — billboard, не наклоняются вместе с полом
-  ctx.fillStyle = "white";
-  ctx.font = "11px sans-serif";
+  const level = player.level ?? 1;
+  const nameLabel = isMiniboss ? `☠ ${player.nickname}` : (level > 1 ? `Lv.${level} ${player.nickname}` : player.nickname);
+  ctx.fillStyle = isMiniboss ? "#fecaca" : "white";
+  ctx.font = isMiniboss ? "bold 13px sans-serif" : "11px sans-serif";
   ctx.textAlign = "center";
   ctx.shadowColor = "rgba(0,0,0,0.8)";
   ctx.shadowBlur = 3;
-  ctx.fillText(player.nickname, x, topY - half - 14);
+  ctx.fillText(nameLabel, x, topY - half - 14);
 
-  const barWidth = tankSize;
-  const barHeight = 5;
+  const barWidth = isMiniboss ? tankSize * 1.6 : tankSize;
+  const barHeight = isMiniboss ? 7 : 5;
   const hpRatio = Math.max(0, hp / maxHp);
   ctx.shadowBlur = 0;
   ctx.fillStyle = "#334155";
   ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth, barHeight);
-  ctx.fillStyle = hpRatio > 0.3 ? "#22c55e" : "#ef4444";
+  ctx.fillStyle = isMiniboss ? "#dc2626" : hpRatio > 0.3 ? "#22c55e" : "#ef4444";
   ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth * hpRatio, barHeight);
   ctx.shadowColor = "transparent";
   ctx.restore();

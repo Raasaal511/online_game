@@ -47,19 +47,21 @@ export function createParticleSystem() {
   }
 
   function spawnMuzzleSmoke(x, y, angle) {
-    for (let i = 0; i < 5; i++) {
-      const spread = angle + (Math.random() - 0.5) * 0.6;
-      const speed = 30 + Math.random() * 40;
+    // дым теперь держится заметно дольше и разлетается медленнее — раньше
+    // рассеивался почти мгновенно (0.3-0.6с), выстрел не успевал "подымить"
+    for (let i = 0; i < 6; i++) {
+      const spread = angle + (Math.random() - 0.5) * 0.7;
+      const speed = 12 + Math.random() * 18;
       particles.push({
         x,
         y,
         z: 6 + Math.random() * 4,
         vx: Math.cos(spread) * speed,
         vy: Math.sin(spread) * speed,
-        vz: 10 + Math.random() * 20,
-        life: 0.3 + Math.random() * 0.3,
+        vz: 6 + Math.random() * 12,
+        life: 0.9 + Math.random() * 0.6,
         age: 0,
-        size: 3 + Math.random() * 3,
+        size: 4 + Math.random() * 4,
         color: SMOKE_COLORS[Math.floor(Math.random() * SMOKE_COLORS.length)],
       });
     }

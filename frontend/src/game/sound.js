@@ -151,6 +151,44 @@ export function playBombWarningSound() {
   }
 }
 
+export function playNukeWarningSound() {
+  // тревожная сирена — заметно громче/ниже, чем обычная бомба, длится дольше
+  try {
+    playTone({ freq: 220, freqEnd: 440, duration: 0.5, type: "sawtooth", volume: 0.2 });
+    playTone({ freq: 440, freqEnd: 220, duration: 0.5, type: "sawtooth", volume: 0.15 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playLevelUpSound() {
+  try {
+    playTone({ freq: 392, freqEnd: 659, duration: 0.2, type: "sine", volume: 0.18 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playMinibossSalvoSound() {
+  // отличается от обычного выстрела намеренно — низкий "утробный" гул под
+  // хлопком, чтобы игрок на слух узнавал залп босса, не глядя на экран
+  try {
+    playTone({ freq: 130, freqEnd: 35, duration: 0.22, type: "sawtooth", volume: 0.24 });
+    playNoise({ duration: 0.14, volume: 0.16, filterFreq: 1800 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playMinibossSpawnSound() {
+  try {
+    playTone({ freq: 60, freqEnd: 40, duration: 0.6, type: "sawtooth", volume: 0.22 });
+    playNoise({ duration: 0.4, volume: 0.15, filterFreq: 600 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 export function unlockAudio() {
   try {
     getCtx();

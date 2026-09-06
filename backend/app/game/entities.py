@@ -23,7 +23,7 @@ MINIGUN_SIZE = 6
 
 # Огнемёт: короткий конус, тикающий урон, без баллистики — попадание мгновенное
 FLAMETHROWER_COOLDOWN = 0.15
-FLAMETHROWER_RANGE = 130.0
+FLAMETHROWER_RANGE = 190.0  # увеличена дальность конуса (было 130)
 FLAMETHROWER_CONE_HALF_ANGLE = 0.45  # радианы (~26°) в каждую сторону от прицела
 FLAMETHROWER_TICK_DAMAGE = 4  # урон за один "тик" контакта с конусом
 FLAMETHROWER_BURN_DURATION = 2.0  # горение продолжается и после выхода из конуса
@@ -57,6 +57,31 @@ COLLISION_DAMAGE = 6  # урон каждому танку при столкно
 COLLISION_PUSHBACK = 90.0  # px/sec импульс взаимного отталкивания
 
 SPAWN_PROTECTION_DURATION = 1.5  # сек неуязвимости сразу после респавна
+
+# Прокачка уровня: опыт копится за убийства, сбрасывается на 1 уровень при
+# смерти (риск/фарм-петля — чем дольше живёшь, тем сильнее, но теряешь всё)
+XP_PER_KILL = 25
+LEVEL_MAX = 5
+LEVEL_XP_THRESHOLDS = [0, 40, 90, 150, 220]  # XP, нужный для перехода на уровень i+1
+LEVEL_HP_BONUS_PCT = 0.10  # +10% к max_hp за уровень
+LEVEL_DAMAGE_BONUS_PCT = 0.05  # +5% к урону оружия за уровень
+
+# Мини-босс: спавнится с шансом на месте смерти игрока, значительно сильнее
+# обычного танка; убийца получает мощное усиление (сильнее "super" пикапа)
+MINIBOSS_SPAWN_CHANCE = 0.2
+MINIBOSS_HP_MULT = 5.0
+MINIBOSS_DAMAGE_MULT = 2.0
+MINIBOSS_SPEED_MULT = 0.6
+MINIBOSS_REWARD_DURATION = 20.0  # дольше обычного supel-pickup (15с)
+MINIBOSS_REWARD_ARMOR_REDUCTION = 0.9
+MINIBOSS_REWARD_DAMAGE_MULT = 3.0
+
+# Ядерка: редкое глобальное событие, взрыв покрывает ~50% диагонали карты
+NUKE_MIN_INTERVAL = 100.0
+NUKE_MAX_INTERVAL = 140.0  # в среднем ~раз в 2 минуты
+NUKE_WARNING_DURATION = 6.0  # сек предупреждения перед взрывом
+NUKE_DAMAGE = 70
+NUKE_RADIUS_FRACTION = 0.5  # доля от диагонали поля
 
 
 @dataclass
@@ -95,6 +120,15 @@ class Player:
     burn_until: float = 0.0  # DoT от огнемёта продолжает тикать после выхода из конуса
     burn_owner_id: str = ""
     last_burn_tick_at: float = -999.0
+    level: int = 1  # прокачка за убийства, сбрасывается на 1 при смерти
+    xp: int = 0
+    miniboss_reward_until: float = 0.0  # награда за убийство мини-босса
+    is_miniboss: bool = False  # True для NPC мини-босса (не обычный игрок)
+    miniboss_owner_nickname: str = ""  # чей это был мини-босс (для сообщения на клиенте)
+    ai_waypoint_x: float = 0.0  # текущая случайная точка блуждания (мини-босс)
+    ai_waypoint_y: float = 0.0
+    ai_last_salvo_at: float = -999.0
+    chat_last_at: float = -999.0
 
     def lifetime(self) -> float:
         end = self.died_at if self.died_at is not None else time.monotonic()
@@ -107,6 +141,27 @@ class Player:
         if now < self.slow_until:
             mult *= SLOW_DEBUFF_MULT
         return mult
+
+    def level_hp_mult(self) -> float:
+        return 1.0 + (self.level - 1) * LEVEL_HP_BONUS_PCT
+
+    def level_damage_mult(self) -> float:
+        return 1.0 + (self.level - 1) * LEVEL_DAMAGE_BONUS_PCT
+
+    def add_xp(self, amount: int) -> bool:
+        # возвращает True, если игрок поднял уровень (для события на клиенте)
+        if self.level >= LEVEL_MAX:
+            return False
+        self.xp += amount
+        leveled_up = False
+        while self.level < LEVEL_MAX and self.xp >= LEVEL_XP_THRESHOLDS[self.level]:
+            self.level += 1
+            leveled_up = True
+        if leveled_up:
+            old_max_hp = self.max_hp
+            self.max_hp = round(TANK_MAX_HP * self.level_hp_mult())
+            self.hp = min(self.max_hp, self.hp + (self.max_hp - old_max_hp))
+        return leveled_up
 
     @staticmethod
     def new(nickname: str, x: float, y: float) -> "Player":
@@ -235,3 +290,19 @@ BOMB_MAX_INTERVAL = 25.0
 BOMB_FUSE_TIME = 2.2  # сек между появлением предупреждения и взрывом
 BOMB_DAMAGE = 35
 BOMB_RADIUS = 70.0
+
+
+@dataclass
+class Nuke:
+    # редкое глобальное событие "ядерка": долгое предупреждение (весь экран
+    # должен успеть увидеть и разбежаться), огромный радиус — все, кто не
+    # успел покинуть зону, получают тяжёлый урон
+    id: str
+    x: float
+    y: float
+    spawned_at: float
+    radius: float
+
+    @staticmethod
+    def new(x: float, y: float, now: float, radius: float) -> "Nuke":
+        return Nuke(id=str(uuid.uuid4())[:8], x=x, y=y, spawned_at=now, radius=radius)

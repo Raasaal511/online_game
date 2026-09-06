@@ -8,15 +8,19 @@ from fastapi import WebSocket
 
 from app.game.leaderboard import save_score, get_leaderboard
 from app.game.weapons import WeaponMixin
+from app.game.miniboss import MinibossMixin, apply_miniboss_kill_reward
+from app.game.nuke import NukeMixin
 from app.game.entities import (
     Player,
     Bullet,
     Pickup,
     Trap,
     Bomb,
+    Nuke,
     BULLET_SPEED,
     TANK_ACCEL,
     TANK_FRICTION,
+    TANK_MAX_HP,
     TRAP_DAMAGE,
     TRAP_SLOW_DURATION,
     TRAP_TRIGGER_COOLDOWN,
@@ -32,6 +36,19 @@ from app.game.entities import (
     BOMB_RADIUS,
     WALL_MAX_HP,
     WALL_RESPAWN_DELAY,
+    XP_PER_KILL,
+    MINIBOSS_SPAWN_CHANCE,
+    MINIBOSS_HP_MULT,
+    MINIBOSS_DAMAGE_MULT,
+    MINIBOSS_SPEED_MULT,
+    MINIBOSS_REWARD_DURATION,
+    MINIBOSS_REWARD_ARMOR_REDUCTION,
+    MINIBOSS_REWARD_DAMAGE_MULT,
+    NUKE_MIN_INTERVAL,
+    NUKE_MAX_INTERVAL,
+    NUKE_WARNING_DURATION,
+    NUKE_DAMAGE,
+    NUKE_RADIUS_FRACTION,
 )
 from app.game.map import (
     FIELD_WIDTH,
@@ -67,8 +84,23 @@ SUPER_DURATION = 15.0
 
 RESPAWN_DELAY = 2.0  # сек до респавна после смерти
 
+# токен-бакет на входящие WS-сообщения одного игрока: не даёт клиенту (или
+# бажным/вредоносным скриптом) заливать сервер сообщениями быстрее, чем
+# сервер способен разумно обработать — независимо от игровых кулдаунов
+# оружия (те защищают баланс, а не нагрузку на broadcast/lock)
+MSG_BUCKET_CAPACITY = 60.0  # максимум "сообщений про запас"
+# клиент реально шлёт: aim до 20/сек (throttle 50мс) + shoot до ~11/сек при
+# автооружии (throttle 90мс) + input по событию нажатия клавиш — суммарно
+# может доходить до ~35-40/сек в пике; лимит выше с запасом, чтобы резать
+# только настоящий флуд (десятки сообщений за один тик), а не игру
+MSG_BUCKET_REFILL_RATE = 60.0  # сообщений/сек восстановления
 
-class GameRoom(WeaponMixin):
+CHAT_MAX_LEN = 200
+CHAT_HISTORY_SIZE = 30
+CHAT_MIN_INTERVAL = 0.5  # сек между сообщениями чата от одного игрока
+
+
+class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
     def __init__(self) -> None:
         self.players: dict[str, Player] = {}
         self.bullets: dict[str, Bullet] = {}
@@ -83,11 +115,17 @@ class GameRoom(WeaponMixin):
         self._super_pickup_id: str | None = None
         self._super_pickup_respawn_at = 5.0  # первый спавн вскоре после старта комнаты
         self._next_bomb_at = time.monotonic() + random.uniform(BOMB_MIN_INTERVAL, BOMB_MAX_INTERVAL)
+        self._next_nuke_at = time.monotonic() + random.uniform(NUKE_MIN_INTERVAL, NUKE_MAX_INTERVAL)
+        self._active_nuke = None
         self._explosions: list[dict] = []  # разовые события взрыва для текущего тика (визуал на клиенте)
         self._wall_hits: list[dict] = []  # стена получила урон, но не разрушена
         self._wall_breaks: list[dict] = []  # стена разрушена в этот тик
         self._wall_restores: list[dict] = []  # стена восстановилась в этот тик
+        self._miniboss_spawns: list[dict] = []  # мини-босс появился в этот тик (событие для клиента)
+        self._level_ups: list[dict] = []  # игрок поднял уровень в этот тик
         self._pending_respawns: dict[str, float] = {}  # player_id -> respawn_at
+        self._chat_log: list[dict] = []  # последние сообщения чата (для истории новым игрокам)
+        self._msg_buckets: dict[str, tuple[float, float]] = {}  # player_id -> (tokens, last_refill_at)
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
 
@@ -106,7 +144,10 @@ class GameRoom(WeaponMixin):
         return time.monotonic() - self.started_at
 
     def is_full(self) -> bool:
-        return len(self.players) >= MAX_PLAYERS
+        # мини-боссы не считаются игроками для лимита комнаты — иначе они
+        # могли бы вытеснить реальных игроков из доступных 10 слотов
+        real_players = sum(1 for p in self.players.values() if not p.is_miniboss)
+        return real_players >= MAX_PLAYERS
 
     def _tick(self) -> None:
         now = time.monotonic()
@@ -116,13 +157,18 @@ class GameRoom(WeaponMixin):
         self._wall_hits = []
         self._wall_breaks = []
         self._wall_restores = []
+        self._miniboss_spawns = []
+        self._level_ups = []
 
         self._spawn_pickups(elapsed)
         self._spawn_super_pickup(now)
         self._spawn_bombs(now)
         self._process_bombs(now)
+        self._spawn_nuke(now)
+        self._process_nuke(now)
         self._process_wall_respawns(now)
         self._process_respawns(now)
+        self._drive_all_minibosses(now)
         self._move_players(now)
         self._move_bullets()
         self._check_bullet_collisions()
@@ -302,13 +348,35 @@ class GameRoom(WeaponMixin):
             self._kill_player(player, killer_id)
 
     def _kill_player(self, player: Player, killer_id: str) -> None:
+        now = time.monotonic()
         player.alive = False
-        player.died_at = time.monotonic()
+        player.died_at = now
         player.deaths += 1
         killer = self.players.get(killer_id)
         if killer is not None and killer.id != player.id:
             killer.kills += 1
-        self._pending_respawns[player.id] = time.monotonic() + RESPAWN_DELAY
+            if not killer.is_miniboss:
+                if player.is_miniboss:
+                    # награда за мини-босса намного мощнее обычного XP/пикапа
+                    apply_miniboss_kill_reward(killer, now)
+                else:
+                    if killer.add_xp(XP_PER_KILL):
+                        self._level_ups.append({"player_id": killer.id, "level": killer.level})
+
+        if player.is_miniboss:
+            # мини-босс — NPC, не участвует в респавне/leaderboard/уровнях
+            self.players.pop(player.id, None)
+            return
+
+        # прокачка уровня сбрасывается на смерти (риск/фарм-петля) — весь
+        # накопленный опыт теряется, max_hp возвращается к базовому
+        player.level = 1
+        player.xp = 0
+        player.max_hp = TANK_MAX_HP
+
+        self._maybe_spawn_miniboss(player.x, player.y, player.nickname)
+
+        self._pending_respawns[player.id] = now + RESPAWN_DELAY
         asyncio.create_task(self._handle_death(player))
 
     async def _handle_death(self, player: Player) -> None:
@@ -612,6 +680,10 @@ class GameRoom(WeaponMixin):
                     "weapon": p.weapon if now < p.weapon_until else "cannon",
                     "is_flaming": now < p.flame_active_until,
                     "is_burning": now < p.burn_until,
+                    "level": p.level,
+                    "xp": p.xp,
+                    "is_miniboss": p.is_miniboss,
+                    "has_miniboss_reward": now < p.miniboss_reward_until,
                 }
                 for p in self.players.values()
             ],
@@ -653,6 +725,20 @@ class GameRoom(WeaponMixin):
             "wall_hits": self._wall_hits,
             "wall_breaks": self._wall_breaks,
             "wall_restores": self._wall_restores,
+            "nuke": (
+                {
+                    "x": self._active_nuke.x,
+                    "y": self._active_nuke.y,
+                    "radius": self._active_nuke.radius,
+                    "warning_progress": min(
+                        1.0, (now - self._active_nuke.spawned_at) / NUKE_WARNING_DURATION
+                    ),
+                }
+                if self._active_nuke is not None
+                else None
+            ),
+            "miniboss_spawns": self._miniboss_spawns,
+            "level_ups": self._level_ups,
         }
 
         # сериализуем payload один раз за тик (не по разу на каждого клиента) —
@@ -673,6 +759,19 @@ class GameRoom(WeaponMixin):
             if pid is not None:
                 self.remove_player(pid)
 
+    async def broadcast_chat(self, entry: dict) -> None:
+        # чат — редкое событие, шлём сразу текстом (не ждём следующего
+        # тикового бинарного state), в отличие от высокочастотных полей
+        payload = {"type": "chat", **entry}
+        dead = []
+        for pid, ws in list(self.connections.items()):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                dead.append(pid)
+        for pid in dead:
+            self.remove_player(pid)
+
     async def add_player(self, nickname: str, ws: WebSocket) -> Player | None:
         async with self._lock:
             if self.is_full():
@@ -687,6 +786,7 @@ class GameRoom(WeaponMixin):
         self.players.pop(player_id, None)
         self.connections.pop(player_id, None)
         self._pending_respawns.pop(player_id, None)
+        self._msg_buckets.pop(player_id, None)
 
     def set_input(self, player_id: str, dir_x: float, dir_y: float) -> None:
         player = self.players.get(player_id)
@@ -698,6 +798,39 @@ class GameRoom(WeaponMixin):
         player = self.players.get(player_id)
         if player and player.alive:
             player.turret_angle = angle
+
+    def allow_message(self, player_id: str) -> bool:
+        # токен-бакет: каждому входящему WS-сообщению (input/aim/shoot/chat)
+        # нужен токен; бакет пополняется со временем, но не может копиться
+        # бесконечно — режет как устойчивый флуд, так и короткие всплески
+        now = time.monotonic()
+        tokens, last_refill = self._msg_buckets.get(player_id, (MSG_BUCKET_CAPACITY, now))
+        tokens = min(MSG_BUCKET_CAPACITY, tokens + (now - last_refill) * MSG_BUCKET_REFILL_RATE)
+        if tokens < 1.0:
+            self._msg_buckets[player_id] = (tokens, now)
+            return False
+        self._msg_buckets[player_id] = (tokens - 1.0, now)
+        return True
+
+    def add_chat_message(self, player_id: str, text: str) -> dict | None:
+        player = self.players.get(player_id)
+        if player is None:
+            return None
+        now = time.monotonic()
+        if now - player.chat_last_at < CHAT_MIN_INTERVAL:
+            return None
+        text = text.strip()[:CHAT_MAX_LEN]
+        if not text:
+            return None
+        player.chat_last_at = now
+        entry = {"nickname": player.nickname, "text": text, "at": now}
+        self._chat_log.append(entry)
+        if len(self._chat_log) > CHAT_HISTORY_SIZE:
+            self._chat_log = self._chat_log[-CHAT_HISTORY_SIZE:]
+        return entry
+
+    def get_chat_history(self) -> list[dict]:
+        return self._chat_log[-CHAT_HISTORY_SIZE:]
 
 
 def clamp(value: float, low: float, high: float) -> float:

@@ -5,9 +5,11 @@ FIELD_HEIGHT = 1100
 
 WALL_THICKNESS = 24
 
-# Карта v3 — "Крепость" (расширенная): открытое кольцо по периметру для
-# манёвра/спавна, внутреннее укреплённое ядро с четырьмя проходами, диагональные
-# укрытия во внутреннем кольце и рампы у части стен крепости для переезда сверху.
+# Карта v4 — "Крепость" (просторная): та же общая композиция (внешнее кольцо
+# для манёвра/спавна, укреплённое ядро в центре, укрытия в углах), но заметно
+# меньше стен и заметно шире все проходы — v3 давала слишком тесные коридоры
+# (30px проём при танке 32px — впритык, легко застрять на повороте) и слишком
+# плотные угловые карманы (несколько укрытий почти вплотную друг к другу).
 # Внутренние укрытия (destructible=True) разрушаются за 2 попадания и
 # восстанавливаются через WALL_RESPAWN_DELAY секунд.
 WALLS: list[Wall] = [
@@ -19,49 +21,42 @@ WALLS: list[Wall] = [
     Wall(0, 0, WALL_THICKNESS, FIELD_HEIGHT, is_border=True),
     Wall(FIELD_WIDTH - WALL_THICKNESS, 0, WALL_THICKNESS, FIELD_HEIGHT, is_border=True),
 
-    # центральное кольцевое укрепление с 4 проходами (крепость) — разрушаемое,
-    # северная и южная стены дополнительно снабжены рампой для переезда сверху
-    Wall(FIELD_WIDTH / 2 - 220, FIELD_HEIGHT / 2 - 170, 170, 30, destructible=True),
-    Wall(FIELD_WIDTH / 2 + 50, FIELD_HEIGHT / 2 - 170, 170, 30, destructible=True),
-    Wall(FIELD_WIDTH / 2 - 220, FIELD_HEIGHT / 2 + 135, 170, 30, destructible=True),
-    Wall(FIELD_WIDTH / 2 + 50, FIELD_HEIGHT / 2 + 135, 170, 30, destructible=True),
-    Wall(FIELD_WIDTH / 2 - 220, FIELD_HEIGHT / 2 - 170, 30, 170, destructible=True),
-    Wall(FIELD_WIDTH / 2 - 220, FIELD_HEIGHT / 2 + 0, 30, 135, destructible=True),
-    Wall(FIELD_WIDTH / 2 + 185, FIELD_HEIGHT / 2 - 170, 30, 170, destructible=True),
-    Wall(FIELD_WIDTH / 2 + 185, FIELD_HEIGHT / 2 + 0, 30, 135, destructible=True),
+    # центральное кольцевое укрепление с 4 проходами (крепость) — проёмы
+    # расширены до 260px (было 170-185px), с большим запасом относительно
+    # размера танка (32px) даже для двух танков разъехаться в проходе;
+    # рампа на северной стене осталась для переезда сверху
+    Wall(FIELD_WIDTH / 2 - 260, FIELD_HEIGHT / 2 - 170, 130, 30, destructible=True),
+    Wall(FIELD_WIDTH / 2 + 130, FIELD_HEIGHT / 2 - 170, 130, 30, destructible=True),
+    Wall(FIELD_WIDTH / 2 - 260, FIELD_HEIGHT / 2 + 140, 130, 30, destructible=True),
+    Wall(FIELD_WIDTH / 2 + 130, FIELD_HEIGHT / 2 + 140, 130, 30, destructible=True),
+    Wall(FIELD_WIDTH / 2 - 260, FIELD_HEIGHT / 2 - 170, 30, 170, destructible=True),
+    Wall(FIELD_WIDTH / 2 + 230, FIELD_HEIGHT / 2 - 170, 30, 170, destructible=True),
 
-    # рампы поверх части крепостных стен — танк, заехавший на рампу, "поверх"
-    # стены (визуально приподнят), коллизия для игроков на этом участке не
-    # действует; пули всё ещё простреливают саму стену как обычно
-    Wall(FIELD_WIDTH / 2 - 220, FIELD_HEIGHT / 2 - 170, 60, 30, is_ramp=True),
-    Wall(FIELD_WIDTH / 2 + 160, FIELD_HEIGHT / 2 + 135, 60, 30, is_ramp=True),
+    # рампа поверх северной стены крепости — переезд сверху без коллизии
+    Wall(FIELD_WIDTH / 2 - 260, FIELD_HEIGHT / 2 - 170, 60, 30, is_ramp=True),
 
-    # ядро в центре крепости оставлено открытым — здесь стоит супер-power-up,
-    # так что вместо укрытия здесь открытая площадка под перекрёстным огнём
-    # диагональные укрытия во внутреннем кольце (NW/NE/SW/SE) — разрушаемые
-    Wall(300, 190, 180, 28, destructible=True),
-    Wall(300, 190, 28, 155, destructible=True),
-
-    Wall(FIELD_WIDTH - 480, 190, 180, 28, destructible=True),
-    Wall(FIELD_WIDTH - 328, 190, 28, 155, destructible=True),
-
-    Wall(300, FIELD_HEIGHT - 218, 28, 155, destructible=True),
-    Wall(300, FIELD_HEIGHT - 218, 180, 28, destructible=True),
-
-    Wall(FIELD_WIDTH - 328, FIELD_HEIGHT - 345, 28, 155, destructible=True),
-    Wall(FIELD_WIDTH - 480, FIELD_HEIGHT - 218, 180, 28, destructible=True),
+    # ядро в центре крепости открыто (супер-power-up под перекрёстным огнём);
+    # диагональные укрытия во внутреннем кольце — по одному короткому элементу
+    # на угол вместо двух смежных (L-образных), проходы между ними и стенами
+    # крепости заметно просторнее
+    Wall(280, 200, 160, 28, destructible=True),
+    Wall(FIELD_WIDTH - 440, 200, 160, 28, destructible=True),
+    Wall(280, FIELD_HEIGHT - 228, 160, 28, destructible=True),
+    Wall(FIELD_WIDTH - 440, FIELD_HEIGHT - 228, 160, 28, destructible=True),
 
     # короткие простреливаемые баррикады у боковых проходов — разрушаемые
-    Wall(FIELD_WIDTH / 2 - 15, 100, 30, 130, destructible=True),
-    Wall(FIELD_WIDTH / 2 - 15, FIELD_HEIGHT - 230, 30, 130, destructible=True),
-    Wall(180, FIELD_HEIGHT / 2 - 15, 150, 30, destructible=True),
-    Wall(FIELD_WIDTH - 330, FIELD_HEIGHT / 2 - 15, 150, 30, destructible=True),
+    Wall(FIELD_WIDTH / 2 - 15, 110, 30, 110, destructible=True),
+    Wall(FIELD_WIDTH / 2 - 15, FIELD_HEIGHT - 220, 30, 110, destructible=True),
+    Wall(200, FIELD_HEIGHT / 2 - 15, 130, 30, destructible=True),
+    Wall(FIELD_WIDTH - 330, FIELD_HEIGHT / 2 - 15, 130, 30, destructible=True),
 
-    # новые угловые укрытия в расширенных зонах карты (симметричные пары)
-    Wall(560, 90, 30, 120, destructible=True),
-    Wall(FIELD_WIDTH - 590, 90, 30, 120, destructible=True),
-    Wall(560, FIELD_HEIGHT - 210, 30, 120, destructible=True),
-    Wall(FIELD_WIDTH - 590, FIELD_HEIGHT - 210, 30, 120, destructible=True),
+    # угловые укрытия в расширенных зонах карты — разнесены от боковых
+    # баррикад и от углов крепости заметно дальше, чем в v3, чтобы не
+    # создавать тесные "карманы" сразу у нескольких стен
+    Wall(620, 120, 30, 110, destructible=True),
+    Wall(FIELD_WIDTH - 650, 120, 30, 110, destructible=True),
+    Wall(620, FIELD_HEIGHT - 230, 30, 110, destructible=True),
+    Wall(FIELD_WIDTH - 650, FIELD_HEIGHT - 230, 30, 110, destructible=True),
 ]
 
 # Точки спавна игроков — вынесены во внешнее открытое кольцо, подальше от
@@ -84,8 +79,8 @@ SPAWN_POINTS: list[tuple[float, float]] = [
 TRAP_POINTS: list[tuple[float, float]] = [
     (FIELD_WIDTH / 2, FIELD_HEIGHT / 2 - 195),
     (FIELD_WIDTH / 2, FIELD_HEIGHT / 2 + 195),
-    (FIELD_WIDTH / 2 - 245, FIELD_HEIGHT / 2),
-    (FIELD_WIDTH / 2 + 245, FIELD_HEIGHT / 2),
+    (FIELD_WIDTH / 2 - 285, FIELD_HEIGHT / 2),
+    (FIELD_WIDTH / 2 + 285, FIELD_HEIGHT / 2),
 ]
 
 # Точка супер-power-up — прямо в центральном ядре крепости (самое опасное,

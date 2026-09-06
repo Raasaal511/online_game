@@ -12,6 +12,8 @@ import {
   drawFlameCone3D,
   drawMuzzleFlash3D,
   drawBomb3D,
+  drawNukeWarning3D,
+  drawCastShadow,
   drawExplosion3D,
   drawWallBreakEffect3D,
   drawWallHitSpark3D,
@@ -26,6 +28,10 @@ import {
   playExplosionSound,
   playPickupSound,
   playBombWarningSound,
+  playNukeWarningSound,
+  playLevelUpSound,
+  playMinibossSpawnSound,
+  playMinibossSalvoSound,
   playWallHitSound,
   playWallBreakSound,
   unlockAudio,
@@ -63,7 +69,7 @@ function lerpAngle(a, b, t) {
   return a + diff * t;
 }
 
-export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoot }) {
+export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoot, onGameEvent }) {
   const canvasRef = useRef(null);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -82,6 +88,9 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
   const wallBreaksRef = useRef([]); // {x, y, age} — эффект разрушения стены
   const wallHitsRef = useRef([]); // {x, y, age} — искра при попадании без разрушения
   const kickbackRef = useRef(new Map()); // playerId -> 0..1, отдача ствола
+  const hadNukeRef = useRef(false); // была ли ядерка активна в прошлом кадре (для звука появления)
+  const onGameEventRef = useRef(onGameEvent);
+  onGameEventRef.current = onGameEvent;
 
   const fieldWidth = mapInfo.field?.width || 1400;
   const fieldHeight = mapInfo.field?.height || 900;
@@ -131,14 +140,30 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
 
       const particles = particlesRef.current;
 
+      // мини-босс стреляет обычными "cannon" пулями (не отдельным kind), но
+      // звук должен отличаться от игрока — иначе залп по площади не читается
+      // на слух как угроза от босса
+      const minibossOwnerIds = new Set(
+        (current.players || []).filter((p) => p.is_miniboss).map((p) => p.id)
+      );
+
       // новые пули -> звук выстрела (зависит от типа оружия) + отдача ствола
       // + вспышка/дым; исчезнувшие пули -> искра на месте последней позиции
       const seenBulletIds = new Set();
+      const salvoOwnersPlayed = new Set(); // залп босса — 1 звук на весь веер, не 5 подряд
       for (const b of current.bullets || []) {
         seenBulletIds.add(b.id);
         if (!lastBulletPos.current.has(b.id)) {
-          const soundFn = WEAPON_SHOOT_SOUND[b.kind] || playShotSound;
-          soundFn();
+          const isBossBullet = minibossOwnerIds.has(b.owner_id);
+          if (isBossBullet) {
+            if (!salvoOwnersPlayed.has(b.owner_id)) {
+              salvoOwnersPlayed.add(b.owner_id);
+              playMinibossSalvoSound();
+            }
+          } else {
+            const soundFn = WEAPON_SHOOT_SOUND[b.kind] || playShotSound;
+            soundFn();
+          }
           kickbackRef.current.set(b.owner_id ?? b.id, 1);
           const angle = Math.atan2(b.vy ?? 0, b.vx ?? 1);
           particles.spawnMuzzleSmoke(b.x, b.y, angle);
@@ -211,6 +236,29 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       }
       isFirstBombSync.current = false;
       knownBombIds.current = seenBombIds;
+
+      // ядерка появилась -> тревожная сирена (один раз при появлении, не каждый кадр)
+      if (current.nuke && !hadNukeRef.current) {
+        playNukeWarningSound();
+        onGameEventRef.current?.({ type: "nuke_warning" });
+      }
+      hadNukeRef.current = Boolean(current.nuke);
+
+      // мини-босс появился на карте -> звук + уведомление в UI
+      for (const spawn of current.miniboss_spawns || []) {
+        playMinibossSpawnSound();
+        onGameEventRef.current?.({ type: "miniboss_spawn", owner: spawn.owner });
+      }
+
+      // игрок поднял уровень -> звук (для себя) + частицы, уведомление в UI
+      for (const levelUp of current.level_ups || []) {
+        if (levelUp.player_id === playerId) {
+          playLevelUpSound();
+          onGameEventRef.current?.({ type: "level_up", level: levelUp.level });
+        }
+        const p = current.players?.find((pl) => pl.id === levelUp.player_id);
+        if (p) particles.spawnExplosion(p.x, p.y, 0.5);
+      }
 
       // серверные события взрыва (ракета/бомба) -> визуальная ударная волна
       // + звук; отслеживаем по количеству, т.к. explosions приходят как
@@ -316,12 +364,50 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         drawBomb3D(ctx, bomb, timestamp / 1000);
       }
 
+      // ядерка — редкое глобальное событие, рисуется поверх бомб (крупнее и заметнее)
+      if (current.nuke) {
+        drawNukeWarning3D(ctx, current.nuke, timestamp / 1000);
+      }
+
       // динамическое состояние разрушаемых стен (active/hp) приходит в
       // каждом тике отдельно от статичной геометрии (mapInfo.walls, один раз
       // при welcome) — объединяем по id перед отрисовкой
       const wallStateById = new Map();
       for (const ws of current.wall_states || []) {
         wallStateById.set(ws.id, ws);
+      }
+
+      // отбрасываемые тени: танки рядом со стенами/друг с другом кидают тень
+      // на соседний объект (contact shadow) — раньше каждый объект отбрасывал
+      // тень только сам под собой, теперь тень "дотягивается" до соседей.
+      // Ограничено ~10 танками и стенами рядом — дёшево, не требует spatial index.
+      const aliveTanks = (current.players || [])
+        .filter((p) => p.alive)
+        .map((p) => {
+          const s = smooth.get(p.id);
+          return { x: s?.x ?? p.x, y: s?.y ?? p.y, size: p.is_miniboss ? 52 : TANK_SIZE };
+        });
+      for (let i = 0; i < aliveTanks.length; i++) {
+        const tank = aliveTanks[i];
+        for (const w of walls) {
+          const wallState = wallStateById.get(w.id);
+          if (wallState && !wallState.active) continue;
+          const closestX = Math.max(w.x, Math.min(tank.x, w.x + w.width));
+          const closestY = Math.max(w.y, Math.min(tank.y, w.y + w.height));
+          const dist = Math.hypot(tank.x - closestX, tank.y - closestY);
+          if (dist < 60) {
+            drawCastShadow(ctx, tank.x, tank.y, tank.size, 55);
+            break; // одной тени на ближайшую стену достаточно
+          }
+        }
+        for (let j = i + 1; j < aliveTanks.length; j++) {
+          const other = aliveTanks[j];
+          const dist = Math.hypot(tank.x - other.x, tank.y - other.y);
+          if (dist < 50) {
+            drawCastShadow(ctx, tank.x, tank.y, tank.size, 45);
+            drawCastShadow(ctx, other.x, other.y, other.size, 45);
+          }
+        }
       }
 
       // painter's algorithm: все объекты сцены сортируются по Y (глубине),
@@ -405,13 +491,18 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       height={fieldHeight}
       style={{
         display: "block",
-        margin: "0 auto",
         border: "2px solid #334155",
         borderRadius: "8px",
         boxShadow: "0 20px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(148, 163, 184, 0.08)",
         cursor: "crosshair",
+        // ограничиваем ОБА измерения доступным пространством, сохраняя
+        // соотношение сторон карты — иначе на невысоких viewport (маленькое
+        // окно браузера) canvas вылезал за пределы экрана и создавал скролл
         maxWidth: "100%",
+        maxHeight: "100%",
+        width: "auto",
         height: "auto",
+        objectFit: "contain",
         userSelect: "none",
         WebkitUserSelect: "none",
         touchAction: "none",

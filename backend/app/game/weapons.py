@@ -71,8 +71,10 @@ class WeaponMixin:
             player.damage = 20
 
         # множитель урона (damage/super boost) применяется поверх базового
-        # урона оружия, а не только к пушке — иначе смена оружия "теряла" бы бонус
+        # урона оружия, а не только к пушке — иначе смена оружия "теряла" бы бонус;
+        # бонус за уровень прокачки (+5%/уровень) действует поверх всего остального
         boost_mult = player.damage / 20 if player.damage != 20 else 1.0
+        boost_mult *= player.level_damage_mult()
 
         if weapon == "flamethrower":
             player.flame_active_until = now + 0.2  # держится, пока клавиша зажата (клиент шлёт shoot часто)
@@ -108,7 +110,12 @@ class WeaponMixin:
             )
         else:
             bullet = Bullet.new(
-                player.id, muzzle_x, muzzle_y, player.turret_angle, player.damage, kind="cannon"
+                player.id,
+                muzzle_x,
+                muzzle_y,
+                player.turret_angle,
+                round(player.damage * player.level_damage_mult()),
+                kind="cannon",
             )
         self.bullets[bullet.id] = bullet
 
@@ -143,7 +150,8 @@ class WeaponMixin:
                 diff = abs(_angle_diff(player.turret_angle, angle_to_target))
                 if diff > FLAMETHROWER_CONE_HALF_ANGLE:
                     continue
-                self._apply_damage(target, FLAMETHROWER_TICK_DAMAGE, player.id)
+                dmg = round(FLAMETHROWER_TICK_DAMAGE * player.level_damage_mult())
+                self._apply_damage(target, dmg, player.id)
                 target.burn_until = now + FLAMETHROWER_BURN_DURATION
                 target.burn_owner_id = player.id
 
@@ -154,4 +162,7 @@ class WeaponMixin:
             if now - player.last_burn_tick_at < FLAMETHROWER_BURN_INTERVAL:
                 continue
             player.last_burn_tick_at = now
-            self._apply_damage(player, FLAMETHROWER_BURN_TICK_DAMAGE, player.burn_owner_id)
+            owner = self.players.get(player.burn_owner_id)
+            mult = owner.level_damage_mult() if owner is not None else 1.0
+            dmg = round(FLAMETHROWER_BURN_TICK_DAMAGE * mult)
+            self._apply_damage(player, dmg, player.burn_owner_id)

@@ -13,6 +13,7 @@ export function useGameSocket(nickname) {
   const [deathInfo, setDeathInfo] = useState(null);
   const [connected, setConnected] = useState(false);
   const [roomFull, setRoomFull] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]); // {nickname, text, at}
   const wsRef = useRef(null);
 
   useEffect(() => {
@@ -31,12 +32,15 @@ export function useGameSocket(nickname) {
       if (data.type === "welcome") {
         setPlayerId(data.player_id);
         setMapInfo({ walls: data.walls, traps: data.traps || [], field: data.field });
+        setChatMessages(data.chat_history || []);
       } else if (data.type === "full") {
         setRoomFull(true);
       } else if (data.type === "state") {
         setState(data);
       } else if (data.type === "death") {
         setDeathInfo(data);
+      } else if (data.type === "chat") {
+        setChatMessages((prev) => [...prev.slice(-29), data]);
       }
     };
 
@@ -76,6 +80,13 @@ export function useGameSocket(nickname) {
     }
   }, []);
 
+  const sendChat = useCallback((text) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN && text.trim()) {
+      ws.send(JSON.stringify({ type: "chat", text: text.slice(0, 200) }));
+    }
+  }, []);
+
   const clearDeath = useCallback(() => setDeathInfo(null), []);
 
   return {
@@ -85,9 +96,11 @@ export function useGameSocket(nickname) {
     deathInfo,
     connected,
     roomFull,
+    chatMessages,
     sendInput,
     sendAim,
     sendShoot,
+    sendChat,
     clearDeath,
   };
 }

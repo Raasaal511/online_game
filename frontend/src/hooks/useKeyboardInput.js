@@ -30,13 +30,20 @@ export function useKeyboardInput(onChange) {
       onChange(x, y);
     };
 
+    // пока фокус в текстовом поле (например, чат) — буквы вроде WASD не
+    // должны двигать танк, иначе печатать сообщение невозможно
+    const isTypingTarget = (target) =>
+      target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA");
+
     const handleKeyDown = (e) => {
+      if (isTypingTarget(e.target)) return;
       if (KEY_MAP[e.code]) {
         pressed.current.add(e.code);
         compute();
       }
     };
     const handleKeyUp = (e) => {
+      if (isTypingTarget(e.target)) return;
       if (KEY_MAP[e.code]) {
         pressed.current.delete(e.code);
         compute();
