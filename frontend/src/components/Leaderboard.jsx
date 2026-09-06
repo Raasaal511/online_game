@@ -5,7 +5,7 @@ const MEDALS = ["🥇", "🥈", "🥉"];
 export default function Leaderboard({ scores }) {
   return (
     <div style={styles.container}>
-      <h3 style={styles.title}>🏆 Топ-3 по убийствам</h3>
+      <h3 style={styles.title}>🏆 Топ-3 этой игры</h3>
       <ol style={styles.list}>
         {scores.length === 0 && <li style={styles.empty}>Пока нет рекордов</li>}
         {scores.map((s, i) => (

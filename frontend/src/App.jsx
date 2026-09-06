@@ -6,8 +6,7 @@ import ChatBox from "./components/ChatBox.jsx";
 import { useGameSocket } from "./hooks/useGameSocket.js";
 import { useKeyboardInput } from "./hooks/useKeyboardInput.js";
 import { colors, panel, fontFamily } from "./ui/theme.js";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+import { TANK_CLASSES } from "./game/tankClasses.js";
 
 const WEAPON_LABELS = {
   cannon: "Пушка",
@@ -25,12 +24,22 @@ const WEAPON_ICONS = {
 
 let bannerIdCounter = 0;
 
+function formatRoundTime(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const m = Math.floor(s / 60);
+  const rest = s % 60;
+  return `${m}:${String(rest).padStart(2, "0")}`;
+}
+
 export default function App() {
   const [nickname, setNickname] = useState(null);
-  const [leaderboard, setLeaderboard] = useState([]);
+  const [tankClass, setTankClass] = useState("gunner");
+  const [gunSkin, setGunSkin] = useState("steel");
   const [banners, setBanners] = useState([]); // {id, text, kind}
+  const [roundWinner, setRoundWinner] = useState(null); // {nickname, kills} — показ баннера конца раунда
   const {
     state,
+    subscribeState,
     mapInfo,
     playerId,
     deathInfo,
@@ -41,10 +50,27 @@ export default function App() {
     sendAim,
     sendShoot,
     sendChat,
+    sendTeleport,
+    sendUltimate,
+    sendSelectClass,
     clearDeath,
-  } = useGameSocket(nickname);
+  } = useGameSocket(nickname, tankClass, gunSkin);
 
   useKeyboardInput(sendInput);
+
+  const handleStart = useCallback((nick, cls, skin) => {
+    setTankClass(cls);
+    setGunSkin(skin);
+    setNickname(nick);
+  }, []);
+
+  const handleRespawnClassPick = useCallback(
+    (cls) => {
+      setTankClass(cls);
+      sendSelectClass(cls);
+    },
+    [sendSelectClass]
+  );
 
   const pushBanner = useCallback((text, kind, duration = 3000) => {
     const id = ++bannerIdCounter;
@@ -62,27 +88,21 @@ export default function App() {
         pushBanner(`☠️ Мини-босс ${event.owner} появился на карте! Убей его — получишь мощный супер-бонус!`, "warning", 4500);
       } else if (event.type === "level_up") {
         pushBanner(`⭐ Уровень ${event.level}!`, "success", 2500);
+      } else if (event.type === "round_end") {
+        setRoundWinner(event.winner);
       }
     },
     [pushBanner]
   );
 
-  const fetchLeaderboard = useCallback(() => {
-    fetch(`${API_URL}/api/leaderboard`)
-      .then((r) => r.json())
-      .then(setLeaderboard)
-      .catch(() => {});
-  }, []);
-
+  // баннер победителя раунда скрывается сам чуть раньше, чем сервер сделает
+  // реванш (ROUND_END_BANNER_DURATION=6с на бэкенде) — не полноэкранный оверлей,
+  // компактная плашка поверх канваса, не мешающая видеть поле
   useEffect(() => {
-    fetchLeaderboard();
-  }, [fetchLeaderboard]);
-
-  useEffect(() => {
-    if (deathInfo?.leaderboard) {
-      setLeaderboard(deathInfo.leaderboard);
-    }
-  }, [deathInfo]);
+    if (!roundWinner) return;
+    const timer = setTimeout(() => setRoundWinner(null), 5500);
+    return () => clearTimeout(timer);
+  }, [roundWinner]);
 
   // авто-респавн: сервер сам возрождает игрока через respawn_in секунд,
   // так что оверлей смерти просто скрывается по таймеру
@@ -93,7 +113,7 @@ export default function App() {
   }, [deathInfo, clearDeath]);
 
   if (!nickname) {
-    return <NicknameForm onSubmit={setNickname} />;
+    return <NicknameForm onSubmit={handleStart} />;
   }
 
   if (roomFull) {
@@ -124,6 +144,9 @@ export default function App() {
           <span style={{ ...styles.dot, background: connected ? colors.accent : colors.danger }} />
           {connected ? "Онлайн" : "Подключение..."}
         </span>
+        {typeof state.round_time_left === "number" && (
+          <span style={styles.roundTimer}>⏱ {formatRoundTime(state.round_time_left)}</span>
+        )}
         {me && (
           <div style={styles.hpGroup}>
             <div style={styles.hpBarTrack}>
@@ -144,6 +167,30 @@ export default function App() {
                 {WEAPON_ICONS[me.weapon]} {WEAPON_LABELS[me.weapon] || me.weapon}
               </span>
             )}
+            {/* индикаторы всех одновременно активных баффов — раньше подбор
+                armor+damage одновременно был невозможно отличить визуально
+                от одного эффекта, казалось что "работает только один" */}
+            {me.has_super && <span style={styles.buffChip}>💎 Супер</span>}
+            {!me.has_super && me.has_armor && <span style={styles.buffChip}>🛡️ Броня</span>}
+            {!me.has_super && me.has_damage_boost && <span style={styles.buffChip}>💢 Урон</span>}
+            {!me.has_super && me.has_speed_boost && <span style={styles.buffChip}>💨 Скорость</span>}
+            {me.has_slow && <span style={styles.debuffChip}>🐌 Замедление</span>}
+            {me.tank_class === "gunner" && (
+              <span style={styles.statChip}>
+                🔫 {me.reloading ? "перезарядка..." : `${me.ammo}/${me.ammo_max}`}
+              </span>
+            )}
+            <span
+              style={{
+                ...styles.statChip,
+                ...(me.teleport_cooldown > 0 ? null : styles.readyChip),
+              }}
+            >
+              ⚡ {me.teleport_cooldown > 0 ? `${me.teleport_cooldown}с` : "Готово"}
+            </span>
+            <span style={{ ...styles.statChip, ...(me.ultimate_ready ? styles.readyChip : null) }}>
+              🔥 {me.ultimate_ready ? "УЛЬТА ГОТОВА" : `${me.ultimate_kills}/5`}
+            </span>
           </div>
         )}
       </div>
@@ -157,17 +204,36 @@ export default function App() {
             }}
           >
             <GameCanvas
-              state={state}
+              subscribeState={subscribeState}
               mapInfo={mapInfo}
               playerId={playerId}
               sendAim={sendAim}
               sendShoot={sendShoot}
+              sendTeleport={sendTeleport}
+              sendUltimate={sendUltimate}
               onGameEvent={handleGameEvent}
             />
             {/* только игровые индикаторы поверх поля — компас и баннеры коротки
                 и не заслоняют обзор; текстовые панели (лидерборд/список
                 игроков/чат) вынесены за пределы арены в боковую колонку ниже */}
             {miniboss && me && <MinibossCompass me={me} boss={miniboss} />}
+
+            {roundWinner && (
+              <div style={overlayStyles.roundBanner}>
+                <div style={overlayStyles.roundBannerTitle}>🏁 Раунд окончен</div>
+                <div style={overlayStyles.roundBannerText}>
+                  {roundWinner.nickname ? (
+                    <>
+                      👑 <strong>{roundWinner.nickname}</strong> — самый крутой! ({roundWinner.kills}{" "}
+                      убийств)
+                    </>
+                  ) : (
+                    "Никто не набрал убийств — ничья"
+                  )}
+                </div>
+                <div style={overlayStyles.roundBannerSub}>Новый раунд начинается...</div>
+              </div>
+            )}
 
             {banners.length > 0 && (
               <div style={overlayStyles.bannerStack}>
@@ -194,11 +260,22 @@ export default function App() {
                       <div style={overlayStyles.statLabel}>прожито</div>
                     </div>
                   </div>
-                  {deathInfo.is_new_record && (
-                    <p style={{ color: colors.warning, fontWeight: 700, margin: "12px 0 0" }}>
-                      🎉 Новый рекорд топ-3!
-                    </p>
-                  )}
+                  <div style={overlayStyles.respawnClassGrid}>
+                    {TANK_CLASSES.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => handleRespawnClassPick(c.id)}
+                        style={{
+                          ...overlayStyles.respawnClassCard,
+                          ...(tankClass === c.id ? overlayStyles.respawnClassCardActive : null),
+                        }}
+                      >
+                        <div>{c.icon}</div>
+                        <div style={{ fontSize: "11px" }}>{c.name}</div>
+                      </button>
+                    ))}
+                  </div>
                   <p style={styles.respawnText}>Респавн через {deathInfo.respawn_in}с...</p>
                 </div>
               </div>
@@ -207,7 +284,7 @@ export default function App() {
         </div>
 
         <div style={styles.sidePanel}>
-          <Leaderboard scores={leaderboard} />
+          <Leaderboard scores={state.leaderboard || []} />
           <ScoreBoard players={sorted} playerId={playerId} />
           <ChatBox
             messages={chatMessages}
@@ -312,14 +389,18 @@ const styles = {
     ...panel,
   },
   arenaRow: {
-    display: "flex",
+    display: "grid",
+    // средняя колонка держит фиксированную (симметричную) ширину под canvas,
+    // а боковые — равные "пружины" 1fr: игровое поле остаётся по центру
+    // страницы независимо от ширины sidePanel, а не сдвинуто влево от неё
+    gridTemplateColumns: "1fr minmax(0, 1400px) 1fr",
     flex: 1,
     minHeight: 0,
     gap: "12px",
   },
   canvasWrap: {
     position: "relative",
-    flex: 1,
+    gridColumn: "2",
     minWidth: 0,
     minHeight: 0,
     display: "flex",
@@ -327,9 +408,11 @@ const styles = {
     justifyContent: "center",
   },
   // боковая колонка вне игрового поля — лидерборд/список игроков/чат больше
-  // не лежат поверх арены (перекрывали обзор и мешали целиться/двигаться)
+  // не лежат поверх арены (перекрывали обзор и мешали целиться/двигаться).
+  // Занимает 3-ю grid-колонку, поэтому не влияет на центрирование canvas.
   sidePanel: {
-    flexShrink: 0,
+    gridColumn: "3",
+    justifySelf: "start",
     width: "260px",
     display: "flex",
     flexDirection: "column",
@@ -366,6 +449,22 @@ const styles = {
     padding: "2px 8px",
     borderRadius: "6px",
   },
+  buffChip: {
+    fontSize: "13px",
+    fontWeight: 700,
+    color: "#052e16",
+    background: colors.accent,
+    padding: "2px 8px",
+    borderRadius: "6px",
+  },
+  debuffChip: {
+    fontSize: "13px",
+    fontWeight: 700,
+    color: "#fef2f2",
+    background: colors.danger,
+    padding: "2px 8px",
+    borderRadius: "6px",
+  },
   weaponChip: {
     fontSize: "13px",
     fontWeight: 700,
@@ -379,6 +478,19 @@ const styles = {
     fontWeight: 700,
     color: "#052e16",
     background: "#4ade80",
+    padding: "2px 10px",
+    borderRadius: "6px",
+  },
+  readyChip: {
+    color: "#450a0a",
+    background: colors.warning,
+    fontWeight: 700,
+  },
+  roundTimer: {
+    fontSize: "13px",
+    fontWeight: 700,
+    color: colors.text,
+    background: "rgba(255,255,255,0.06)",
     padding: "2px 10px",
     borderRadius: "6px",
   },
@@ -399,7 +511,34 @@ const overlayStyles = {
     padding: "32px 40px",
     textAlign: "center",
     minWidth: "280px",
+    pointerEvents: "auto",
     ...panel,
+  },
+  respawnClassGrid: {
+    display: "flex",
+    gap: "8px",
+    justifyContent: "center",
+    marginTop: "16px",
+  },
+  respawnClassCard: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: "4px",
+    padding: "8px 10px",
+    borderRadius: "8px",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colors.panelBorder,
+    background: "rgba(255,255,255,0.03)",
+    color: colors.text,
+    cursor: "pointer",
+    fontFamily,
+    fontSize: "16px",
+  },
+  respawnClassCardActive: {
+    borderColor: colors.accent,
+    background: colors.accentSoft,
   },
   box2: {
     padding: "48px",
@@ -456,6 +595,39 @@ const overlayStyles = {
     gap: "8px",
     pointerEvents: "none",
     zIndex: 10,
+  },
+  // компактная плашка сверху канваса — не полноэкранный оверлей, не мешает
+  // видеть поле, но заметно объявляет победителя раунда
+  roundBanner: {
+    position: "absolute",
+    top: "6%",
+    left: "50%",
+    transform: "translateX(-50%)",
+    padding: "10px 28px",
+    borderRadius: "12px",
+    textAlign: "center",
+    background: "rgba(120, 53, 15, 0.92)",
+    border: "2px solid #f59e0b",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+    pointerEvents: "none",
+    zIndex: 11,
+  },
+  roundBannerTitle: {
+    fontSize: "12px",
+    fontWeight: 700,
+    letterSpacing: "1px",
+    color: "#fef3c7",
+    textTransform: "uppercase",
+  },
+  roundBannerText: {
+    fontSize: "17px",
+    fontWeight: 800,
+    color: "#fffbeb",
+    margin: "2px 0",
+  },
+  roundBannerSub: {
+    fontSize: "11px",
+    color: "#fde68a",
   },
   banner: {
     padding: "10px 24px",

@@ -3,9 +3,20 @@ const HIT_COLORS = ["#facc15", "#fbbf24"];
 const SMOKE_COLORS = ["#64748b", "#475569", "#94a3b8"];
 const FLAME_COLORS = ["#fde047", "#f97316", "#ef4444"];
 const GRAVITY = 420; // px/sec^2, псевдо-3D падение осколков
+// жёсткий потолок на общее число живых частиц: при частых взрывах/ядерке
+// (spawnExplosion со scale=4 даёт 144 частицы разом) без лимита список мог
+// расти в тысячи элементов одновременно — update/filter/draw каждый кадр
+// становятся заметно дороже и вносят вклад в лаги. Старые частицы (уже
+// почти прозрачные) обрезаются первыми — визуально почти незаметно.
+const MAX_PARTICLES = 500;
 
 export function createParticleSystem() {
   let particles = [];
+
+  function capParticles() {
+    if (particles.length <= MAX_PARTICLES) return;
+    particles.splice(0, particles.length - MAX_PARTICLES);
+  }
 
   function spawnExplosion(x, y, scale = 1) {
     const count = Math.round(36 * scale);
@@ -25,6 +36,7 @@ export function createParticleSystem() {
         color: EXPLOSION_COLORS[Math.floor(Math.random() * EXPLOSION_COLORS.length)],
       });
     }
+    capParticles();
   }
 
   function spawnHitSpark(x, y) {
@@ -86,23 +98,34 @@ export function createParticleSystem() {
     }
   }
 
-  function spawnDust(x, y) {
-    for (let i = 0; i < 2; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 10 + Math.random() * 20;
+  // пыль из-под гусениц: раньше — одинаковые сплошные точки, разлетающиеся в
+  // случайную сторону вне зависимости от движения танка. Теперь клубы пыли
+  // вылетают из-под гусениц НАЗАД относительно направления хода (как
+  // настоящий пыльный след), растут в размере пока рассеиваются (мягкий
+  // radial-gradient в drawParticles3D, не сплошной круг) и живут дольше при
+  // резком разгоне (burst=true), чем на ровном ходу.
+  function spawnDust(x, y, angle = 0, speed = 100, burst = false) {
+    const backAngle = angle + Math.PI; // клубы остаются позади танка, не по кругу
+    const count = burst ? 4 : 2;
+    const speedFactor = Math.min(1, speed / 200);
+    for (let i = 0; i < count; i++) {
+      const spread = backAngle + (Math.random() - 0.5) * 1.1;
+      const kickSpeed = (burst ? 30 : 14) + Math.random() * 22 * speedFactor;
       particles.push({
-        x,
-        y,
+        kind: "dust",
+        x: x + Math.cos(backAngle) * 6,
+        y: y + Math.sin(backAngle) * 6,
         z: 0,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        vz: 5 + Math.random() * 10,
-        life: 0.4 + Math.random() * 0.3,
+        vx: Math.cos(spread) * kickSpeed,
+        vy: Math.sin(spread) * kickSpeed,
+        vz: 4 + Math.random() * 8,
+        life: (burst ? 0.55 : 0.4) + Math.random() * 0.35,
         age: 0,
-        size: 2 + Math.random() * 2,
-        color: "#94a3b8",
+        size: (burst ? 5 : 3) + Math.random() * 3,
+        color: burst ? "#a8a29e" : "#8a8f98",
       });
     }
+    capParticles();
   }
 
   function update(dt) {
@@ -116,6 +139,7 @@ export function createParticleSystem() {
       p.vy *= 0.95;
     }
     particles = particles.filter((p) => p.age < p.life);
+    capParticles();
   }
 
   // рендер делегирован вызывающей стороне (render3d.js), чтобы учитывать

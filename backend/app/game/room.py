@@ -6,7 +6,6 @@ import time
 import orjson
 from fastapi import WebSocket
 
-from app.game.leaderboard import save_score, get_leaderboard
 from app.game.weapons import WeaponMixin
 from app.game.miniboss import MinibossMixin, apply_miniboss_kill_reward
 from app.game.nuke import NukeMixin
@@ -48,6 +47,12 @@ from app.game.entities import (
     NUKE_WARNING_DURATION,
     NUKE_DAMAGE,
     NUKE_RADIUS_FRACTION,
+    TANK_CLASSES,
+    DEFAULT_TANK_CLASS,
+    GUNNER_MAG_SIZE,
+    ULTIMATE_KILLS_REQUIRED,
+    GUN_SKINS,
+    DEFAULT_GUN_SKIN,
 )
 from app.game.map import (
     FIELD_WIDTH,
@@ -82,6 +87,9 @@ SUPER_DAMAGE_MULT = 2.5
 SUPER_DURATION = 15.0
 
 RESPAWN_DELAY = 2.0  # сек до респавна после смерти
+
+ROUND_DURATION = 600.0  # 10 минут — по истечении объявляется победитель раунда
+ROUND_END_BANNER_DURATION = 6.0  # сек показа баннера победителя перед реваншем
 
 # токен-бакет на входящие WS-сообщения одного игрока: не даёт клиенту (или
 # бажным/вредоносным скриптом) заливать сервер сообщениями быстрее, чем
@@ -124,8 +132,14 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._level_ups: list[dict] = []  # игрок поднял уровень в этот тик
         self._laser_shots: list[dict] = []  # лазер мини-босса фактически выстрелил в этот тик
         self._pending_respawns: dict[str, float] = {}  # player_id -> respawn_at
+        self._pending_respawn_class: dict[str, str] = {}  # player_id -> tank_class выбранный на следующий респавн
+        self._teleports: list[dict] = []  # телепорт игрока сработал в этот тик (визуал на клиенте)
         self._chat_log: list[dict] = []  # последние сообщения чата (для истории новым игрокам)
         self._msg_buckets: dict[str, tuple[float, float]] = {}  # player_id -> (tokens, last_refill_at)
+        self._round_started_at = time.monotonic()
+        self._round_end_banner_until: float | None = None  # пока не None — идёт показ баннера победителя
+        self._round_winner: dict | None = None  # {"nickname", "kills"} — последний объявленный победитель
+        self._round_ended_event: dict | None = None  # разовое событие конца раунда для текущего тика
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
 
@@ -160,7 +174,10 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._miniboss_spawns = []
         self._level_ups = []
         self._laser_shots = []
+        self._teleports = []
+        self._round_ended_event = None
 
+        self._process_round(now)
         self._spawn_pickups(elapsed)
         self._spawn_super_pickup(now)
         self._spawn_bombs(now)
@@ -169,6 +186,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._process_nuke(now)
         self._process_wall_respawns(now)
         self._process_respawns(now)
+        self._process_gunner_reload(now)
         self._drive_all_minibosses(now)
         self._move_players(now)
         self._move_bullets()
@@ -178,6 +196,49 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._check_pickup_collisions(now)
         self._check_trap_collisions(now)
         self._check_tank_collisions(now)
+
+    def _process_round(self, now: float) -> None:
+        # пока показывается баннер победителя — ждём ROUND_END_BANNER_DURATION,
+        # затем полный реванш: респавн всех + сброс kills/deaths/level/xp
+        if self._round_end_banner_until is not None:
+            if now >= self._round_end_banner_until:
+                self._round_end_banner_until = None
+                self._start_new_round(now)
+            return
+
+        if now - self._round_started_at < ROUND_DURATION:
+            return
+
+        # раунд закончился — определяем победителя по числу убийств среди
+        # реальных игроков (мини-боссы не участвуют, это NPC)
+        real_players = [p for p in self.players.values() if not p.is_miniboss]
+        winner = max(real_players, key=lambda p: p.kills, default=None)
+        self._round_winner = (
+            {"nickname": winner.nickname, "kills": winner.kills} if winner is not None else None
+        )
+        self._round_ended_event = self._round_winner
+        self._round_end_banner_until = now + ROUND_END_BANNER_DURATION
+
+    def _start_new_round(self, now: float) -> None:
+        # полный реванш: все живые и мёртвые игроки возрождаются на новых
+        # точках спавна, счёт (kills/deaths/level/xp) сбрасывается у всех —
+        # мини-боссы (NPC) просто удаляются, а не респавнятся как игроки
+        self._round_started_at = now
+        for player_id in list(self.players.keys()):
+            player = self.players.get(player_id)
+            if player is None:
+                continue
+            if player.is_miniboss:
+                self.players.pop(player_id, None)
+                continue
+            player.kills = 0
+            player.deaths = 0
+            player.level = 1
+            player.xp = 0
+            player.ultimate_kills = 0
+            player.max_hp = TANK_MAX_HP
+            self._pending_respawns.pop(player_id, None)
+            self._respawn(player_id)
 
     def _move_players(self, now: float) -> None:
         for player in self.players.values():
@@ -256,6 +317,8 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
                     self._damage_wall(wall)
                 if bullet.kind == "rocket":
                     self._explode_rocket(bullet)
+                elif bullet.kind == "ultimate":
+                    self._explode_ultimate(bullet)
                 break
 
             if hit_wall:
@@ -275,13 +338,26 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
             for player in list(self.players.values()):
                 if not player.alive or player.id == bullet.owner_id:
                     continue
+                if bullet.pierce and player.id in bullet.hit_ids:
+                    continue  # сквозная пуля уже нанесла урон этой цели — не бьёт дважды
                 if aabb_collides_point(player, bullet):
+                    dmg = bullet.damage
+                    if bullet.falloff_range > 0:
+                        traveled = math.hypot(bullet.x - bullet.spawn_x, bullet.y - bullet.spawn_y)
+                        frac = min(1.0, traveled / bullet.falloff_range)
+                        mult = 1.0 - frac * (1.0 - bullet.falloff_min_mult)
+                        dmg = round(dmg * mult)
                     if bullet.kind == "rocket":
                         self._explode_rocket(bullet)
+                    elif bullet.kind == "ultimate":
+                        self._explode_ultimate(bullet)
                     else:
-                        self._apply_damage(player, bullet.damage, bullet.owner_id)
-                    dead_bullets.append(bullet.id)
-                    break
+                        self._apply_damage(player, dmg, bullet.owner_id)
+                    if bullet.pierce:
+                        bullet.hit_ids.add(player.id)
+                    else:
+                        dead_bullets.append(bullet.id)
+                        break
 
         for bid in dead_bullets:
             self.bullets.pop(bid, None)
@@ -335,6 +411,9 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
                 else:
                     if killer.add_xp(XP_PER_KILL):
                         self._level_ups.append({"player_id": killer.id, "level": killer.level})
+                    from app.game.entities import ULTIMATE_KILLS_REQUIRED
+
+                    killer.ultimate_kills = min(ULTIMATE_KILLS_REQUIRED, killer.ultimate_kills + 1)
 
         if player.is_miniboss:
             # мини-босс — NPC, не участвует в респавне/leaderboard/уровнях
@@ -352,11 +431,17 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._pending_respawns[player.id] = now + RESPAWN_DELAY
         asyncio.create_task(self._handle_death(player))
 
+    def _live_leaderboard(self) -> list[dict]:
+        # топ-3 текущей игровой сессии по убийствам — живёт только в памяти
+        # процесса (по нику+соединению текущего захода), без БД/истории между
+        # перезапусками сервера или разных игровых сессий одного и того же ника
+        real_players = [p for p in self.players.values() if not p.is_miniboss]
+        top = sorted(real_players, key=lambda p: p.kills, reverse=True)[:3]
+        return [{"nickname": p.nickname, "kills": p.kills} for p in top if p.kills > 0]
+
     async def _handle_death(self, player: Player) -> None:
         lifetime = player.lifetime()
         kills = player.kills
-        is_new_record = await asyncio.to_thread(save_score, player.nickname, kills, lifetime)
-        leaderboard = await asyncio.to_thread(get_leaderboard)
         ws = self.connections.get(player.id)
         if ws is not None:
             try:
@@ -365,8 +450,6 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
                         "type": "death",
                         "lifetime_seconds": lifetime,
                         "kills": kills,
-                        "is_new_record": is_new_record,
-                        "leaderboard": leaderboard,
                         "respawn_in": RESPAWN_DELAY,
                     }
                 )
@@ -377,7 +460,22 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         ready = [pid for pid, at in self._pending_respawns.items() if now >= at]
         for pid in ready:
             del self._pending_respawns[pid]
-            self._respawn(pid)
+            tank_class = self._pending_respawn_class.pop(pid, None)
+            self._respawn(pid, tank_class)
+
+    def set_respawn_class(self, player_id: str, tank_class: str) -> None:
+        # игрок выбирает класс на следующее возрождение (пока он мёртв) —
+        # применяется в _respawn, не мгновенно, т.к. живой танк не меняет класс
+        if tank_class in TANK_CLASSES:
+            self._pending_respawn_class[player_id] = tank_class
+
+    def set_gun_skin(self, player_id: str, gun_skin: str) -> None:
+        # чисто косметическое — можно менять в любой момент, не только на респавне
+        if gun_skin not in GUN_SKINS:
+            return
+        player = self.players.get(player_id)
+        if player is not None:
+            player.gun_skin = gun_skin
 
     def _pick_spawn_point(self) -> tuple[float, float]:
         # избегаем не только других игроков, но и активных угроз рядом с
@@ -407,7 +505,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         ]
         return random.choice(safer_points or SPAWN_POINTS)
 
-    def _respawn(self, player_id: str) -> None:
+    def _respawn(self, player_id: str, tank_class: str | None = None) -> None:
         player = self.players.get(player_id)
         if player is None:
             return
@@ -430,6 +528,14 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         player.weapon_until = 0.0
         player.flame_active_until = 0.0
         player.burn_until = 0.0
+        if tank_class in TANK_CLASSES:
+            player.tank_class = tank_class
+        player.ammo = GUNNER_MAG_SIZE
+        player.reload_until = 0.0
+        player.teleport_ready_at = 0.0
+        # ultimate_kills НЕ обнуляем: копится за всю сессию так же, как kills —
+        # риск/фарм-петля уровня намеренно жёстче (сбрасывается на смерти),
+        # но ульта — награда за суммарный вклад в игру, а не за одну жизнь
         # короткая неуязвимость сразу после спавна — подстраховка сверх
         # безопасного выбора точки: пуля может долететь уже после спавна,
         # или несколько игроков заспавниться близко друг к другу одновременно
@@ -486,20 +592,29 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
                 self._super_pickup_respawn_at = now + SUPER_PICKUP_RESPAWN_DELAY
 
     def _apply_pickup(self, player: Player, pickup: Pickup, now: float) -> None:
+        # баффы одного типа стакаются аддитивно по времени: если armor/damage/
+        # speed/super ещё действует, новый пикап ПРОДЛЕВАЕТ оставшееся время
+        # (не перезаписывает его заново) — подобрал два подряд, действует дольше,
+        # а не просто "обновил" тот же таймер. Сила эффекта не растёт (не стакается
+        # мультипликативно) — только длительность, чтобы не сломать баланс.
         if pickup.kind == "heal":
             player.hp = min(player.max_hp, player.hp + 40)
         elif pickup.kind == "armor":
-            player.armor_until = now + ARMOR_DURATION
+            base = max(now, player.armor_until)
+            player.armor_until = base + ARMOR_DURATION
         elif pickup.kind == "damage":
-            player.damage_until = now + DAMAGE_BOOST_DURATION
+            base = max(now, player.damage_until)
+            player.damage_until = base + DAMAGE_BOOST_DURATION
             player.damage = round(20 * DAMAGE_BOOST_MULT)
         elif pickup.kind == "speed":
-            player.speed_boost_until = now + SPEED_BOOST_DURATION
+            base = max(now, player.speed_boost_until)
+            player.speed_boost_until = base + SPEED_BOOST_DURATION
         elif pickup.kind == "super":
             # мощный комбинированный баф: урон, броня, скорость и полный хил разом
-            player.super_until = now + SUPER_DURATION
-            player.speed_boost_until = now + SUPER_DURATION
-            player.damage_until = now + SUPER_DURATION
+            base = max(now, player.super_until, player.speed_boost_until, player.damage_until)
+            player.super_until = base + SUPER_DURATION
+            player.speed_boost_until = base + SUPER_DURATION
+            player.damage_until = base + SUPER_DURATION
             player.damage = round(20 * SUPER_DAMAGE_MULT)
             player.hp = player.max_hp
         elif pickup.kind in ("minigun", "flamethrower", "rocket"):
@@ -664,6 +779,14 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
                     "xp": p.xp,
                     "is_miniboss": p.is_miniboss,
                     "has_miniboss_reward": now < p.miniboss_reward_until,
+                    "tank_class": p.tank_class,
+                    "gun_skin": p.gun_skin,
+                    "ammo": p.ammo,
+                    "ammo_max": GUNNER_MAG_SIZE,
+                    "reloading": p.tank_class == "gunner" and now < p.reload_until,
+                    "ultimate_kills": p.ultimate_kills,
+                    "ultimate_ready": p.ultimate_kills >= ULTIMATE_KILLS_REQUIRED,
+                    "teleport_cooldown": max(0.0, round(p.teleport_ready_at - now, 1)),
                     "laser_charging": (
                         {
                             "angle": p.laser_angle,
@@ -733,6 +856,14 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
             "miniboss_spawns": self._miniboss_spawns,
             "level_ups": self._level_ups,
             "laser_shots": self._laser_shots,
+            "teleports": self._teleports,
+            "round_time_left": (
+                0.0
+                if self._round_end_banner_until is not None
+                else max(0.0, round(ROUND_DURATION - (now - self._round_started_at), 1))
+            ),
+            "round_end": self._round_ended_event,
+            "leaderboard": self._live_leaderboard(),
         }
 
         # сериализуем payload один раз за тик (не по разу на каждого клиента) —
@@ -766,12 +897,22 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         for pid in dead:
             self.remove_player(pid)
 
-    async def add_player(self, nickname: str, ws: WebSocket) -> Player | None:
+    async def add_player(
+        self,
+        nickname: str,
+        ws: WebSocket,
+        tank_class: str = DEFAULT_TANK_CLASS,
+        gun_skin: str = DEFAULT_GUN_SKIN,
+    ) -> Player | None:
         async with self._lock:
             if self.is_full():
                 return None
             x, y = self._pick_spawn_point()
             player = Player.new(nickname[:16] or "Player", x, y)
+            if tank_class in TANK_CLASSES:
+                player.tank_class = tank_class
+            if gun_skin in GUN_SKINS:
+                player.gun_skin = gun_skin
             self.players[player.id] = player
             self.connections[player.id] = ws
             return player
@@ -780,6 +921,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self.players.pop(player_id, None)
         self.connections.pop(player_id, None)
         self._pending_respawns.pop(player_id, None)
+        self._pending_respawn_class.pop(player_id, None)
         self._msg_buckets.pop(player_id, None)
 
     def set_input(self, player_id: str, dir_x: float, dir_y: float) -> None:

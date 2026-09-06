@@ -15,6 +15,54 @@ BULLET_DAMAGE = 20
 FIRE_COOLDOWN = 0.80  # сек между выстрелами
 BULLET_MAX_BOUNCES = 0  # без рикошета — пуля гаснет при любом попадании в стену
 
+# Классы танка: выбираются перед началом игры (и заново после каждой смерти),
+# постоянны на всю жизнь танка (в отличие от временных weapon-пикапов с карты,
+# которые продолжают работать поверх базового оружия класса).
+TANK_CLASSES = ("sniper", "brawler", "gunner")
+DEFAULT_TANK_CLASS = "gunner"
+
+# Снайпер: редкий но мощный сквозной выстрел — пробивает всех на линии огня
+SNIPER_COOLDOWN = 1.5
+SNIPER_DAMAGE = 45
+SNIPER_SPEED = 1100.0
+SNIPER_SIZE = 8
+SNIPER_PIERCE = True
+
+# Ближний бой: двойная пушка веером, урон линейно падает с дистанцией
+BRAWLER_COOLDOWN = 0.55
+BRAWLER_DAMAGE = 26  # урон в упор (falloff=0), на BRAWLER_MAX_RANGE падает до BRAWLER_MIN_DAMAGE_MULT
+BRAWLER_MIN_DAMAGE_MULT = 0.35
+BRAWLER_MAX_RANGE = 420.0
+BRAWLER_SPREAD = 0.12  # радианы между двумя стволами
+BRAWLER_SPEED = 760.0
+BRAWLER_SIZE = 11
+
+# Пулемёт: очень быстрая стрельба с ограниченным магазином и автоперезарядкой
+GUNNER_COOLDOWN = 0.09
+GUNNER_DAMAGE = 7
+GUNNER_SPEED = 900.0
+GUNNER_SIZE = 6
+GUNNER_MAG_SIZE = 88
+GUNNER_RELOAD_TIME = 2.0
+
+# Ульта: копится по убийствам, разряжается одним мощным выстрелом (усиленная
+# бомба на прямом попадании — не мгновенный хитскан, отдельный управляемый снаряд)
+ULTIMATE_KILLS_REQUIRED = 5
+ULTIMATE_SPEED = 460.0
+ULTIMATE_SIZE = 20
+ULTIMATE_DIRECT_DAMAGE = 90
+ULTIMATE_SPLASH_RADIUS = 140.0
+ULTIMATE_SPLASH_DAMAGE = 70
+
+# Телепорт: короткий прыжок в направлении курсора, ограничен кулдауном
+TELEPORT_COOLDOWN = 8.0
+TELEPORT_DISTANCE = 260.0
+
+# Скин пушки: чисто косметический выбор в главном меню, не влияет на баланс —
+# сервер только хранит и рассылает выбор, вся отрисовка цвета на клиенте
+GUN_SKINS = ("steel", "crimson", "gold", "toxic", "azure")
+DEFAULT_GUN_SKIN = "steel"
+
 # Пулемёт: быстрый и слабый, без рикошета — чистый DPS-race на реакции
 MINIGUN_COOLDOWN = 0.12
 MINIGUN_DAMAGE = 6
@@ -59,12 +107,15 @@ COLLISION_PUSHBACK = 90.0  # px/sec импульс взаимного оттал
 SPAWN_PROTECTION_DURATION = 3.0  # сек неуязвимости сразу после респавна
 
 # Прокачка уровня: опыт копится за убийства, сбрасывается на 1 уровень при
-# смерти (риск/фарм-петля — чем дольше живёшь, тем сильнее, но теряешь всё)
+# смерти (риск/фарм-петля — чем дольше живёшь, тем сильнее, но теряешь всё).
+# Пороги снижены (было 40/90/150/220) — уровень растёт заметно быстрее, а
+# бонус за уровень уменьшен (было 10%/5%), чтобы прокачка не превращалась в
+# imbа на верхних уровнях — просто более частое и явное ощущение роста силы.
 XP_PER_KILL = 25
 LEVEL_MAX = 5
-LEVEL_XP_THRESHOLDS = [0, 40, 90, 150, 220]  # XP, нужный для перехода на уровень i+1
-LEVEL_HP_BONUS_PCT = 0.10  # +10% к max_hp за уровень
-LEVEL_DAMAGE_BONUS_PCT = 0.05  # +5% к урону оружия за уровень
+LEVEL_XP_THRESHOLDS = [0, 25, 55, 90, 130]  # XP, нужный для перехода на уровень i+1
+LEVEL_HP_BONUS_PCT = 0.06  # +6% к max_hp за уровень
+LEVEL_DAMAGE_BONUS_PCT = 0.03  # +3% к урону оружия за уровень
 
 # Мини-босс: спавнится с шансом на месте смерти игрока, значительно сильнее
 # обычного танка; убийца получает мощное усиление (сильнее "super" пикапа)
@@ -165,6 +216,12 @@ class Player:
     laser_started_at: float = 0.0  # момент начала заряда — для расчёта прогресса на клиенте
     laser_fire_at: float = 0.0  # момент фактического выстрела лазером
     laser_angle: float = 0.0  # угол луча (зафиксирован в момент начала заряда)
+    tank_class: str = DEFAULT_TANK_CLASS  # выбирается перед стартом/после смерти, постоянен на жизнь
+    ammo: int = GUNNER_MAG_SIZE  # актуально только для gunner — остаток патронов в магазине
+    reload_until: float = 0.0  # timestamp окончания автоперезарядки gunner
+    ultimate_kills: int = 0  # счётчик убийств до готовности ульты (сбрасывается при использовании)
+    teleport_ready_at: float = 0.0  # timestamp, когда телепорт снова доступен
+    gun_skin: str = DEFAULT_GUN_SKIN  # косметический выбор в меню — не влияет на баланс
 
     def lifetime(self) -> float:
         end = self.died_at if self.died_at is not None else time.monotonic()
@@ -215,7 +272,15 @@ class Bullet:
     damage: int
     size: float = BULLET_SIZE
     bounces_left: int = BULLET_MAX_BOUNCES
-    kind: str = "cannon"  # "cannon" | "minigun" | "rocket" — влияет на визуал и на splash при попадании
+    kind: str = "cannon"  # "cannon" | "minigun" | "rocket" | "sniper" | "brawler" | "ultimate" — визуал/поведение
+    pierce: bool = False  # True = не гаснет при попадании в игрока (снайпер), только при попадании в стену
+    hit_ids: set = field(default_factory=set)  # кому уже нанесён урон — не даёт сквозной пуле бить одну цель дважды
+    falloff_range: float = 0.0  # >0: урон линейно падает от damage до damage*falloff_min_mult на этой дистанции
+    falloff_min_mult: float = 1.0
+    spawn_x: float = 0.0  # точка вылета — для расчёта пройденной дистанции (falloff)
+    spawn_y: float = 0.0
+    splash_radius: float = 0.0  # >0: при попадании/стене — доп. сплэш-урон по площади (ульта)
+    splash_damage: int = 0
 
     @staticmethod
     def new(
@@ -228,6 +293,11 @@ class Bullet:
         size: float = BULLET_SIZE,
         bounces: int = BULLET_MAX_BOUNCES,
         kind: str = "cannon",
+        pierce: bool = False,
+        falloff_range: float = 0.0,
+        falloff_min_mult: float = 1.0,
+        splash_radius: float = 0.0,
+        splash_damage: int = 0,
     ) -> "Bullet":
         import math
 
@@ -244,6 +314,13 @@ class Bullet:
             size=size,
             bounces_left=bounces,
             kind=kind,
+            pierce=pierce,
+            falloff_range=falloff_range,
+            falloff_min_mult=falloff_min_mult,
+            spawn_x=x,
+            spawn_y=y,
+            splash_radius=splash_radius,
+            splash_damage=splash_damage,
         )
 
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useMouseAim } from "../hooks/useMouseAim.js";
+import { useActionKeys } from "../hooks/useActionKeys.js";
 import { createParticleSystem } from "../game/particles.js";
 import { createTrackSystem } from "../game/tracks.js";
 import {
@@ -18,6 +19,7 @@ import {
   drawNukeExplosion3D,
   drawLaserCharge3D,
   drawLaserShot3D,
+  drawTeleportEffect3D,
   drawWallBreakEffect3D,
   drawWallHitSpark3D,
   drawParticles3D,
@@ -39,6 +41,10 @@ import {
   playMinibossLaserFireSound,
   playWallHitSound,
   playWallBreakSound,
+  playTeleportSound,
+  playSniperShotSound,
+  playBrawlerShotSound,
+  playUltimateFireSound,
   unlockAudio,
 } from "../game/sound.js";
 
@@ -68,6 +74,9 @@ const WEAPON_SHOOT_SOUND = {
   minigun: playMinigunSound,
   flamethrower: playFlamethrowerSound,
   rocket: playRocketLaunchSound,
+  sniper: playSniperShotSound,
+  brawler: playBrawlerShotSound,
+  ultimate: playUltimateFireSound,
 };
 
 function lerpAngle(a, b, t) {
@@ -77,10 +86,29 @@ function lerpAngle(a, b, t) {
   return a + diff * t;
 }
 
-export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoot, onGameEvent }) {
+const EMPTY_STATE = { players: [], bullets: [], pickups: [] };
+
+export default function GameCanvas({
+  subscribeState,
+  mapInfo,
+  playerId,
+  sendAim,
+  sendShoot,
+  sendTeleport,
+  sendUltimate,
+  onGameEvent,
+}) {
   const canvasRef = useRef(null);
-  const stateRef = useRef(state);
-  stateRef.current = state;
+  // каждый тик (30/сек) приходит сюда напрямую через подписку, минуя React
+  // state/ре-рендер — см. комментарий у HUD_THROTTLE_MS в useGameSocket.js
+  const stateRef = useRef(EMPTY_STATE);
+
+  useEffect(() => {
+    if (!subscribeState) return undefined;
+    return subscribeState((data) => {
+      stateRef.current = data;
+    });
+  }, [subscribeState]);
 
   // сглаженные (интерполированные) позиции/углы игроков для плавного рендера
   const smoothRef = useRef(new Map());
@@ -99,7 +127,14 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
   const motionSmoothRef = useRef(new Map()); // playerId -> {emaSpeed, dirX, dirY} — EMA для эффекта разгона
   const laserChargingRef = useRef(new Set()); // playerId'ы, у которых лазер уже заряжался в прошлом кадре
   const laserShotsRef = useRef([]); // {x, y, angle, range, age} — вспышки фактических выстрелов лазера
+  const teleportEffectsRef = useRef([]); // {x, y, age} — вспышка появления после телепорта
   const hadNukeRef = useRef(false); // была ли ядерка активна в прошлом кадре (для звука появления)
+  // сервер шлёт state 30 раз/сек, а draw() вызывается на каждый requestAnimationFrame
+  // (~60 раз/сек) — без этой защиты один и тот же тик (с одним и тем же
+  // непустым miniboss_spawns/level_ups/explosions/...) обрабатывался бы 2+ раза
+  // подряд, пока не придёт следующий тик, дублируя баннеры/звуки/партиклы
+  const lastProcessedStateRef = useRef(null);
+  const lastRoundEndRef = useRef(null); // последний обработанный объект round_end (по ссылке)
   const onGameEventRef = useRef(onGameEvent);
   onGameEventRef.current = onGameEvent;
 
@@ -116,6 +151,17 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
   const { mouseRef, isFiringRef } = useMouseAim(canvasRef, () => {}, handleShoot);
   const shakeRef = useRef({ magnitude: 0 });
 
+  const handleTeleport = () => {
+    const current = stateRef.current;
+    const me = current.players?.find((p) => p.id === playerId);
+    if (!me || !me.alive) return;
+    const dx = mouseRef.current.x - me.x;
+    const dy = mouseRef.current.y - me.y;
+    sendTeleport(Math.atan2(dy, dx));
+  };
+
+  useActionKeys(handleTeleport, sendUltimate);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -129,6 +175,10 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       lastTime = timestamp;
 
       const current = stateRef.current;
+      // защита от повторной обработки одного и того же тика на нескольких
+      // подряд requestAnimationFrame — см. комментарий у lastProcessedStateRef
+      const isNewTick = current !== lastProcessedStateRef.current;
+      lastProcessedStateRef.current = current;
       const smooth = smoothRef.current;
       const seenIds = new Set();
 
@@ -147,6 +197,18 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       }
       for (const id of Array.from(smooth.keys())) {
         if (!seenIds.has(id)) smooth.delete(id);
+      }
+      // те же id, что и smooth — очищаем и остальные per-player Map'ы от
+      // игроков, вышедших из комнаты. Раньше не чистились вообще: за долгую
+      // работу сервера (постоянная ротация игроков, особенно с системой
+      // раундов) эти Map росли неограниченно, что медленно, но неуклонно
+      // замедляло .get()/.set() в горячем цикле рендера — источник
+      // накапливающихся микро-лагов при долгой сессии.
+      for (const id of Array.from(motionSmoothRef.current.keys())) {
+        if (!seenIds.has(id)) motionSmoothRef.current.delete(id);
+      }
+      for (const id of Array.from(knownAliveState.current.keys())) {
+        if (!seenIds.has(id)) knownAliveState.current.delete(id);
       }
 
       const particles = particlesRef.current;
@@ -255,20 +317,35 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       }
       hadNukeRef.current = Boolean(current.nuke);
 
-      // мини-босс появился на карте -> звук + уведомление в UI
-      for (const spawn of current.miniboss_spawns || []) {
-        playMinibossSpawnSound();
-        onGameEventRef.current?.({ type: "miniboss_spawn", owner: spawn.owner });
+      // мини-босс появился на карте -> звук + уведомление в UI (только на
+      // новый тик — иначе один и тот же спавн триггерит баннер на каждый
+      // requestAnimationFrame, пока сервер не пришлёт следующий тик)
+      if (isNewTick) {
+        for (const spawn of current.miniboss_spawns || []) {
+          playMinibossSpawnSound();
+          onGameEventRef.current?.({ type: "miniboss_spawn", owner: spawn.owner });
+        }
       }
 
       // игрок поднял уровень -> звук (для себя) + частицы, уведомление в UI
-      for (const levelUp of current.level_ups || []) {
-        if (levelUp.player_id === playerId) {
-          playLevelUpSound();
-          onGameEventRef.current?.({ type: "level_up", level: levelUp.level });
+      if (isNewTick) {
+        for (const levelUp of current.level_ups || []) {
+          if (levelUp.player_id === playerId) {
+            playLevelUpSound();
+            onGameEventRef.current?.({ type: "level_up", level: levelUp.level });
+          }
+          const p = current.players?.find((pl) => pl.id === levelUp.player_id);
+          if (p) particles.spawnExplosion(p.x, p.y, 0.5);
         }
-        const p = current.players?.find((pl) => pl.id === levelUp.player_id);
-        if (p) particles.spawnExplosion(p.x, p.y, 0.5);
+      }
+
+      // раунд закончился -> уведомление в UI с победителем. round_end — не
+      // массив разовых событий (как level_ups/miniboss_spawns), а единичное
+      // поле, непустое ровно один тик — отслеживаем по ссылке, чтобы не
+      // сработать повторно, пока сервер не пришлёт следующий объект
+      if (isNewTick && current.round_end && current.round_end !== lastRoundEndRef.current) {
+        lastRoundEndRef.current = current.round_end;
+        onGameEventRef.current?.({ type: "round_end", winner: current.round_end });
       }
 
       // лазер мини-босса заряжается -> звук нарастания один раз при начале
@@ -285,11 +362,31 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       }
       laserChargingRef.current = chargingNow;
 
-      for (const shot of current.laser_shots || []) {
-        laserShotsRef.current.push({ ...shot, age: 0 });
-        playMinibossLaserFireSound();
-        shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, 10);
+      if (isNewTick) {
+        for (const shot of current.laser_shots || []) {
+          laserShotsRef.current.push({ ...shot, age: 0 });
+          playMinibossLaserFireSound();
+          shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, 10);
+        }
       }
+
+      // телепорт игрока -> вспышка на новом месте + сброс сглаживания (иначе
+      // интерполяция "провезёт" танк по прямой от старой точки к новой)
+      if (isNewTick) {
+        for (const tp of current.teleports || []) {
+          teleportEffectsRef.current.push({ x: tp.x, y: tp.y, age: 0 });
+          const s = smooth.get(tp.player_id);
+          if (s) {
+            s.x = tp.x;
+            s.y = tp.y;
+          }
+          if (tp.player_id === playerId) playTeleportSound();
+        }
+      }
+      for (const eff of teleportEffectsRef.current) {
+        eff.age += dt / 0.35;
+      }
+      teleportEffectsRef.current = teleportEffectsRef.current.filter((e) => e.age < 1);
       for (const shot of laserShotsRef.current) {
         shot.age += dt / LASER_SHOT_LIFETIME;
       }
@@ -298,13 +395,15 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       // серверные события взрыва (ракета/бомба) -> визуальная ударная волна
       // + звук; отслеживаем по количеству, т.к. explosions приходят как
       // "снимок за этот тик" без стабильных id
-      for (const ex of current.explosions || []) {
-        const isNuke = ex.kind === "nuke";
-        explosionsRef.current.push({ x: ex.x, y: ex.y, radius: ex.radius, age: 0, kind: ex.kind });
-        // ядерка — заметно масштабнее и дольше: больше частиц, сильнее тряска
-        particles.spawnExplosion(ex.x, ex.y, isNuke ? 4 : 1.6);
-        playExplosionSound(true);
-        shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, isNuke ? 26 : 12);
+      if (isNewTick) {
+        for (const ex of current.explosions || []) {
+          const isNuke = ex.kind === "nuke";
+          explosionsRef.current.push({ x: ex.x, y: ex.y, radius: ex.radius, age: 0, kind: ex.kind });
+          // ядерка — заметно масштабнее и дольше: больше частиц, сильнее тряска
+          particles.spawnExplosion(ex.x, ex.y, isNuke ? 4 : 1.6);
+          playExplosionSound(true);
+          shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, isNuke ? 26 : 12);
+        }
       }
       for (const explosion of explosionsRef.current) {
         const lifetime = explosion.kind === "nuke" ? NUKE_EXPLOSION_LIFETIME : EXPLOSION_LIFETIME;
@@ -313,11 +412,13 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       explosionsRef.current = explosionsRef.current.filter((e) => e.age < 1);
 
       // стена сломана оружием игрока -> обвал обломков + звук + тряска
-      for (const brk of current.wall_breaks || []) {
-        wallBreaksRef.current.push({ x: brk.x, y: brk.y, age: 0 });
-        particles.spawnExplosion(brk.x, brk.y, 0.9);
-        playWallBreakSound();
-        shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, 6);
+      if (isNewTick) {
+        for (const brk of current.wall_breaks || []) {
+          wallBreaksRef.current.push({ x: brk.x, y: brk.y, age: 0 });
+          particles.spawnExplosion(brk.x, brk.y, 0.9);
+          playWallBreakSound();
+          shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, 6);
+        }
       }
       for (const effect of wallBreaksRef.current) {
         effect.age += dt / WALL_BREAK_LIFETIME;
@@ -325,9 +426,11 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       wallBreaksRef.current = wallBreaksRef.current.filter((e) => e.age < 1);
 
       // попадание в стену без разрушения -> короткая искра + глухой удар
-      for (const hit of current.wall_hits || []) {
-        wallHitsRef.current.push({ x: hit.x, y: hit.y, age: 0 });
-        playWallHitSound();
+      if (isNewTick) {
+        for (const hit of current.wall_hits || []) {
+          wallHitsRef.current.push({ x: hit.x, y: hit.y, age: 0 });
+          playWallHitSound();
+        }
       }
       for (const hit of wallHitsRef.current) {
         hit.age += dt / WALL_HIT_LIFETIME;
@@ -336,19 +439,50 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
 
       particles.update(dt);
 
+      // единый проход по живым игрокам со сглаженными координатами — раньше
+      // players.filter(alive).map(...) выполнялся 3 раза за кадр отдельно
+      // (для следов гусениц, для теней, и инлайн при сборке sceneObjects),
+      // каждый раз заново аллоцируя массив и вызывая smooth.get(); данные
+      // на 100% пересекаются, поэтому строим один раз и переиспользуем везде
+      const aliveTanksData = [];
+      for (const p of current.players || []) {
+        if (!p.alive) continue;
+        const s = smooth.get(p.id);
+        const x = s?.x ?? p.x;
+        const y = s?.y ?? p.y;
+        const motion = motionSmoothRef.current.get(p.id);
+        const moveAngle = motion ? Math.atan2(motion.dirY, motion.dirX) : (s?.angle ?? p.turret_angle);
+        aliveTanksData.push({
+          player: p,
+          x,
+          y,
+          turret_angle: s?.angle ?? p.turret_angle,
+          moveAngle,
+          speed: p.speed,
+          size: p.is_miniboss ? MINIBOSS_TANK_SIZE : TANK_SIZE,
+        });
+      }
+
       // следы гусениц: используем сглаженные позиции + серверную скорость,
       // чтобы след появлялся плавно синхронно с визуальным движением танка
       const tracks = tracksRef.current;
-      const trackSources = (current.players || [])
-        .filter((p) => p.alive)
-        .map((p) => {
-          const s = smooth.get(p.id);
-          const x = s?.x ?? p.x;
-          const y = s?.y ?? p.y;
-          if ((p.speed ?? 0) > 100 && Math.random() < 0.3) particles.spawnDust(x, y);
-          return { id: p.id, x, y, turret_angle: s?.angle ?? p.turret_angle, alive: true, speed: p.speed };
-        });
-      tracks.update(trackSources, timestamp / 1000);
+      for (const t of aliveTanksData) {
+        if ((t.speed ?? 0) > 100 && Math.random() < 0.3) {
+          particles.spawnDust(t.x, t.y, t.moveAngle, t.speed);
+        }
+      }
+      tracks.update(
+        aliveTanksData.map((t) => ({
+          id: t.player.id,
+          x: t.x,
+          y: t.y,
+          turret_angle: t.turret_angle,
+          moveAngle: t.moveAngle,
+          alive: true,
+          speed: t.speed,
+        })),
+        timestamp / 1000
+      );
 
       const me = current.players?.find((p) => p.id === playerId);
       const meSmooth = smooth.get(playerId);
@@ -419,12 +553,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       // на соседний объект (contact shadow) — раньше каждый объект отбрасывал
       // тень только сам под собой, теперь тень "дотягивается" до соседей.
       // Ограничено ~10 танками и стенами рядом — дёшево, не требует spatial index.
-      const aliveTanks = (current.players || [])
-        .filter((p) => p.alive)
-        .map((p) => {
-          const s = smooth.get(p.id);
-          return { x: s?.x ?? p.x, y: s?.y ?? p.y, size: p.is_miniboss ? MINIBOSS_TANK_SIZE : TANK_SIZE };
-        });
+      const aliveTanks = aliveTanksData;
       for (let i = 0; i < aliveTanks.length; i++) {
         const tank = aliveTanks[i];
         for (const w of walls) {
@@ -461,13 +590,11 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       for (const pu of current.pickups || []) {
         sceneObjects.push({ type: "pickup", y: pu.y, data: pu });
       }
-      for (const p of current.players || []) {
-        if (!p.alive) continue;
-        const s = smooth.get(p.id) || p;
+      for (const t of aliveTanksData) {
         sceneObjects.push({
           type: "tank",
-          y: s.y,
-          data: { ...p, x: s.x, y: s.y, turret_angle: s.angle },
+          y: t.y,
+          data: { ...t.player, x: t.x, y: t.y, turret_angle: t.turret_angle },
         });
       }
       for (const b of current.bullets || []) {
@@ -517,7 +644,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
           // резкий разгон с места — всплеск пыли из-под гусениц, отдельно
           // от обычной пыли на ходу (та зависит только от текущей скорости)
           if (accelBoost > 0.4) {
-            particles.spawnDust(obj.data.x, obj.data.y);
+            particles.spawnDust(obj.data.x, obj.data.y, moveAngle, motion.emaSpeed, true);
           }
 
           drawTank3D(ctx, obj.data, obj.data.id === playerId, TANK_SIZE, timestamp / 1000, kickback, accelBoost, moveAngle);
@@ -546,6 +673,11 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       // вспышки фактических выстрелов лазера мини-босса
       for (const shot of laserShotsRef.current) {
         drawLaserShot3D(ctx, shot, shot.age);
+      }
+
+      // вспышки телепорта
+      for (const eff of teleportEffectsRef.current) {
+        drawTeleportEffect3D(ctx, eff, eff.age);
       }
 
       // эффекты попаданий/разрушения стен

@@ -63,11 +63,20 @@ def spawn_miniboss(x: float, y: float, owner_nickname: str) -> Player:
 
 
 def apply_miniboss_kill_reward(player: Player, now: float) -> None:
-    # награда сильнее обычного "super" пикапа: дольше длится, больше брони/урона
-    player.super_until = now + MINIBOSS_REWARD_DURATION
-    player.miniboss_reward_until = now + MINIBOSS_REWARD_DURATION
-    player.speed_boost_until = now + MINIBOSS_REWARD_DURATION
-    player.damage_until = now + MINIBOSS_REWARD_DURATION
+    # награда сильнее обычного "super" пикапа: дольше длится, больше брони/урона.
+    # Стакается аддитивно так же, как обычные баффы (см. _apply_pickup в room.py) —
+    # убил второго босса, пока действует награда от первого — время продлевается.
+    base = max(
+        now,
+        player.super_until,
+        player.miniboss_reward_until,
+        player.speed_boost_until,
+        player.damage_until,
+    )
+    player.super_until = base + MINIBOSS_REWARD_DURATION
+    player.miniboss_reward_until = base + MINIBOSS_REWARD_DURATION
+    player.speed_boost_until = base + MINIBOSS_REWARD_DURATION
+    player.damage_until = base + MINIBOSS_REWARD_DURATION
     player.damage = round(20 * MINIBOSS_REWARD_DAMAGE_MULT)
     player.hp = player.max_hp
 

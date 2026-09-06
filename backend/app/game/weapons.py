@@ -22,6 +22,34 @@ from app.game.entities import (
     ROCKET_DIRECT_DAMAGE,
     ROCKET_SPLASH_RADIUS,
     ROCKET_SPLASH_DAMAGE,
+    SNIPER_COOLDOWN,
+    SNIPER_DAMAGE,
+    SNIPER_SPEED,
+    SNIPER_SIZE,
+    SNIPER_PIERCE,
+    BRAWLER_COOLDOWN,
+    BRAWLER_DAMAGE,
+    BRAWLER_MIN_DAMAGE_MULT,
+    BRAWLER_MAX_RANGE,
+    BRAWLER_SPREAD,
+    BRAWLER_SPEED,
+    BRAWLER_SIZE,
+    GUNNER_COOLDOWN,
+    GUNNER_DAMAGE,
+    GUNNER_SPEED,
+    GUNNER_SIZE,
+    GUNNER_MAG_SIZE,
+    GUNNER_RELOAD_TIME,
+    ULTIMATE_KILLS_REQUIRED,
+    ULTIMATE_SPEED,
+    ULTIMATE_SIZE,
+    ULTIMATE_DIRECT_DAMAGE,
+    ULTIMATE_SPLASH_RADIUS,
+    ULTIMATE_SPLASH_DAMAGE,
+    TELEPORT_COOLDOWN,
+    TELEPORT_DISTANCE,
+    TANK_CLASSES,
+    DEFAULT_TANK_CLASS,
 )
 
 _WEAPON_COOLDOWN = {
@@ -29,6 +57,12 @@ _WEAPON_COOLDOWN = {
     "minigun": MINIGUN_COOLDOWN,
     "flamethrower": FLAMETHROWER_COOLDOWN,
     "rocket": ROCKET_COOLDOWN,
+}
+
+_CLASS_COOLDOWN = {
+    "sniper": SNIPER_COOLDOWN,
+    "brawler": BRAWLER_COOLDOWN,
+    "gunner": GUNNER_COOLDOWN,
 }
 
 
@@ -58,11 +92,29 @@ class WeaponMixin:
             return
         now = time.monotonic()
 
-        weapon = player.weapon if now < player.weapon_until else "cannon"
-        if weapon != player.weapon:
-            player.weapon = "cannon"
+        # временный weapon-пикап с карты (minigun/flamethrower/rocket) имеет
+        # приоритет над базовым оружием класса танка — так же, как раньше
+        # переопределял "cannon"; постоянное оружие класса — это то, что
+        # остаётся ПОСЛЕ истечения пикапа, а не сам пикап
+        pickup_active = now < player.weapon_until and player.weapon in (
+            "minigun",
+            "flamethrower",
+            "rocket",
+        )
+        weapon = player.weapon if pickup_active else "class"
 
-        cooldown = _WEAPON_COOLDOWN.get(weapon, FIRE_COOLDOWN)
+        if weapon == "class":
+            cooldown = _CLASS_COOLDOWN.get(player.tank_class, GUNNER_COOLDOWN)
+        else:
+            cooldown = _WEAPON_COOLDOWN.get(weapon, FIRE_COOLDOWN)
+
+        if weapon == "class" and player.tank_class == "gunner":
+            # магазин пуст -> ждём автоперезарядку (тикает в _process_gunner_reload,
+            # не здесь — иначе reload_until/ammo менялись бы только при попытке
+            # выстрелить, а не по факту истечения времени)
+            if player.ammo <= 0:
+                return
+
         if now - player.last_shot_at < cooldown:
             return
         player.last_shot_at = now
@@ -72,7 +124,7 @@ class WeaponMixin:
 
         # множитель урона (damage/super boost) применяется поверх базового
         # урона оружия, а не только к пушке — иначе смена оружия "теряла" бы бонус;
-        # бонус за уровень прокачки (+5%/уровень) действует поверх всего остального
+        # бонус за уровень прокачки действует поверх всего остального
         boost_mult = player.damage / 20 if player.damage != 20 else 1.0
         boost_mult *= player.level_damage_mult()
 
@@ -96,6 +148,7 @@ class WeaponMixin:
                 bounces=0,
                 kind="minigun",
             )
+            self.bullets[bullet.id] = bullet
         elif weapon == "rocket":
             bullet = Bullet.new(
                 player.id,
@@ -108,6 +161,54 @@ class WeaponMixin:
                 bounces=0,
                 kind="rocket",
             )
+            self.bullets[bullet.id] = bullet
+        elif player.tank_class == "sniper":
+            bullet = Bullet.new(
+                player.id,
+                muzzle_x,
+                muzzle_y,
+                player.turret_angle,
+                round(SNIPER_DAMAGE * boost_mult),
+                speed=SNIPER_SPEED,
+                size=SNIPER_SIZE,
+                bounces=0,
+                kind="sniper",
+                pierce=SNIPER_PIERCE,
+            )
+            self.bullets[bullet.id] = bullet
+        elif player.tank_class == "brawler":
+            dmg = round(BRAWLER_DAMAGE * boost_mult)
+            for spread in (-BRAWLER_SPREAD / 2, BRAWLER_SPREAD / 2):
+                angle = player.turret_angle + spread
+                bullet = Bullet.new(
+                    player.id,
+                    player.x + math.cos(angle) * (player.size / 2 + 6),
+                    player.y + math.sin(angle) * (player.size / 2 + 6),
+                    angle,
+                    dmg,
+                    speed=BRAWLER_SPEED,
+                    size=BRAWLER_SIZE,
+                    bounces=0,
+                    kind="brawler",
+                    falloff_range=BRAWLER_MAX_RANGE,
+                    falloff_min_mult=BRAWLER_MIN_DAMAGE_MULT,
+                )
+                self.bullets[bullet.id] = bullet
+        elif player.tank_class == "gunner":
+            player.ammo -= 1
+            spread = random.uniform(-0.05, 0.05)
+            bullet = Bullet.new(
+                player.id,
+                muzzle_x,
+                muzzle_y,
+                player.turret_angle + spread,
+                round(GUNNER_DAMAGE * boost_mult),
+                speed=GUNNER_SPEED,
+                size=GUNNER_SIZE,
+                bounces=0,
+                kind="minigun",
+            )
+            self.bullets[bullet.id] = bullet
         else:
             bullet = Bullet.new(
                 player.id,
@@ -117,7 +218,80 @@ class WeaponMixin:
                 round(player.damage * player.level_damage_mult()),
                 kind="cannon",
             )
+            self.bullets[bullet.id] = bullet
+
+    def try_teleport(self, player_id: str, angle: float) -> None:
+        player = self.players.get(player_id)
+        if player is None or not player.alive:
+            return
+        now = time.monotonic()
+        if now < player.teleport_ready_at:
+            return
+        player.teleport_ready_at = now + TELEPORT_COOLDOWN
+
+        from app.game.room import rect_intersects_walls
+
+        target_x = player.x + math.cos(angle) * TELEPORT_DISTANCE
+        target_y = player.y + math.sin(angle) * TELEPORT_DISTANCE
+        # если целевая точка внутри стены — сокращаем дистанцию шагами, пока
+        # не найдём свободное место (или не откажемся от прыжка совсем)
+        for frac in (1.0, 0.75, 0.5, 0.25):
+            tx = player.x + math.cos(angle) * TELEPORT_DISTANCE * frac
+            ty = player.y + math.sin(angle) * TELEPORT_DISTANCE * frac
+            if not rect_intersects_walls(tx, ty, player.size):
+                player.x, player.y = tx, ty
+                self._teleports.append({"player_id": player.id, "x": tx, "y": ty})
+                return
+        # даже минимальный шаг заблокирован — прыжок отменяется, но кулдаун
+        # уже потрачен (намеренно: не даёт спамить попытки телепорта у стены)
+
+    def try_ultimate(self, player_id: str) -> None:
+        player = self.players.get(player_id)
+        if player is None or not player.alive:
+            return
+        if player.ultimate_kills < ULTIMATE_KILLS_REQUIRED:
+            return
+        player.ultimate_kills = 0
+
+        muzzle_x = player.x + math.cos(player.turret_angle) * (player.size / 2 + 10)
+        muzzle_y = player.y + math.sin(player.turret_angle) * (player.size / 2 + 10)
+        bullet = Bullet.new(
+            player.id,
+            muzzle_x,
+            muzzle_y,
+            player.turret_angle,
+            ULTIMATE_DIRECT_DAMAGE,
+            speed=ULTIMATE_SPEED,
+            size=ULTIMATE_SIZE,
+            bounces=0,
+            kind="ultimate",
+            splash_radius=ULTIMATE_SPLASH_RADIUS,
+            splash_damage=ULTIMATE_SPLASH_DAMAGE,
+        )
         self.bullets[bullet.id] = bullet
+
+    def _process_gunner_reload(self, now: float) -> None:
+        for player in self.players.values():
+            if player.tank_class != "gunner" or player.ammo > 0:
+                continue
+            if player.reload_until == 0.0:
+                player.reload_until = now + GUNNER_RELOAD_TIME
+            elif now >= player.reload_until:
+                player.ammo = GUNNER_MAG_SIZE
+                player.reload_until = 0.0
+
+    def _explode_ultimate(self, bullet: Bullet) -> None:
+        for player in list(self.players.values()):
+            if not player.alive:
+                continue
+            dist = math.hypot(player.x - bullet.x, player.y - bullet.y)
+            if dist > bullet.splash_radius:
+                continue
+            falloff = 1 - dist / bullet.splash_radius
+            dmg = round(bullet.splash_damage * falloff)
+            if dmg > 0:
+                self._apply_damage(player, dmg, bullet.owner_id)
+        self._explosions.append({"x": bullet.x, "y": bullet.y, "radius": bullet.splash_radius})
 
     def _explode_rocket(self, bullet: Bullet) -> None:
         # сплэш-урон по всем живым в радиусе взрыва, урон убывает с расстоянием

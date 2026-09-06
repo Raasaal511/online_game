@@ -1,4 +1,5 @@
 let ctx = null;
+let noiseBuffer = null; // общий preset-буфер белого шума — переиспользуется всеми playNoise()
 
 function getCtx() {
   if (!ctx) {
@@ -8,6 +9,24 @@ function getCtx() {
     ctx.resume();
   }
   return ctx;
+}
+
+// один переиспользуемый буфер шума фиксированной длины (1 сек с запасом),
+// а не новый createBuffer()+Math.random()-заполнение на КАЖДЫЙ вызов
+// playNoise — при частой стрельбе (пулемёт ~11 выстр/сек) генерация буфера
+// синхронно в основном потоке при каждом выстреле давала заметные лаги и
+// заставляла звук отставать от игровых событий. Разные duration/filterFreq
+// просто проигрывают срез этого же буфера с разной длительностью/фильтром.
+function getNoiseBuffer(audioCtx) {
+  if (!noiseBuffer || noiseBuffer.sampleRate !== audioCtx.sampleRate) {
+    const bufferSize = audioCtx.sampleRate * 1; // 1 сек — с запасом длиннее любого duration
+    noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+  }
+  return noiseBuffer;
 }
 
 function playTone({ freq, duration, type = "sine", volume = 0.2, freqEnd = null }) {
@@ -36,15 +55,9 @@ function playTone({ freq, duration, type = "sine", volume = 0.2, freqEnd = null 
 
 function playNoise({ duration, volume = 0.2, filterFreq = 1000 }) {
   const audioCtx = getCtx();
-  const bufferSize = audioCtx.sampleRate * duration;
-  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = Math.random() * 2 - 1;
-  }
-
   const noise = audioCtx.createBufferSource();
-  noise.buffer = buffer;
+  noise.buffer = getNoiseBuffer(audioCtx);
+  noise.loop = false;
 
   const filter = audioCtx.createBiquadFilter();
   filter.type = "lowpass";
@@ -203,6 +216,42 @@ export function playMinibossSpawnSound() {
   try {
     playTone({ freq: 60, freqEnd: 40, duration: 0.6, type: "sawtooth", volume: 0.22 });
     playNoise({ duration: 0.4, volume: 0.15, filterFreq: 600 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playSniperShotSound() {
+  try {
+    playTone({ freq: 260, freqEnd: 70, duration: 0.22, type: "sawtooth", volume: 0.3 });
+    playNoise({ duration: 0.12, volume: 0.22, filterFreq: 5000 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playBrawlerShotSound() {
+  try {
+    playTone({ freq: 180, freqEnd: 55, duration: 0.14, type: "square", volume: 0.24 });
+    playNoise({ duration: 0.1, volume: 0.18, filterFreq: 2500 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playTeleportSound() {
+  try {
+    playTone({ freq: 300, freqEnd: 1400, duration: 0.22, type: "sine", volume: 0.2 });
+    playTone({ freq: 900, freqEnd: 2200, duration: 0.15, type: "triangle", volume: 0.12 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+export function playUltimateFireSound() {
+  try {
+    playTone({ freq: 90, freqEnd: 30, duration: 0.5, type: "sawtooth", volume: 0.3 });
+    playNoise({ duration: 0.35, volume: 0.25, filterFreq: 2200 });
   } catch (e) {
     /* ignore */
   }
