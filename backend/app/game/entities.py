@@ -4,15 +4,31 @@ from dataclasses import dataclass, field
 
 
 TANK_SIZE = 32
-TANK_SPEED = 160.0  # px/sec
+TANK_SPEED = 160.0  # px/sec, максимальная скорость танка
+TANK_ACCEL = 480.0  # px/sec^2, разгон — за 1/3 сек танк набирает полную скорость
+TANK_FRICTION = 560.0  # px/sec^2, торможение при отсутствии ввода — чуть резче разгона
 TANK_MAX_HP = 100
 
 BULLET_SPEED = 700.0
 BULLET_SIZE = 10
 BULLET_DAMAGE = 20
 FIRE_COOLDOWN = 0.80  # сек между выстрелами
+BULLET_MAX_BOUNCES = 2  # сколько раз пуля рикошетит от стен/границ поля прежде чем исчезнуть
 
 PICKUP_SIZE = 20
+SPEED_BOOST_DURATION = 8.0
+SPEED_BOOST_MULT = 1.6
+SLOW_DEBUFF_DURATION = 5.0
+SLOW_DEBUFF_MULT = 0.5
+
+TRAP_SIZE = 26
+TRAP_DAMAGE = 15
+TRAP_SLOW_DURATION = 2.5
+TRAP_SLOW_MULT = 0.4
+TRAP_TRIGGER_COOLDOWN = 3.0  # сек до повторного срабатывания для того же игрока
+
+COLLISION_DAMAGE = 6  # урон каждому танку при столкновении друг с другом
+COLLISION_PUSHBACK = 90.0  # px/sec импульс взаимного отталкивания
 
 
 @dataclass
@@ -23,6 +39,8 @@ class Player:
     y: float
     dir_x: float = 0.0
     dir_y: float = 0.0
+    vx: float = 0.0  # текущая скорость (инерция: разгон/торможение, не мгновенная)
+    vy: float = 0.0
     turret_angle: float = 0.0  # радианы, направление башни (к курсору)
     hp: int = TANK_MAX_HP
     max_hp: int = TANK_MAX_HP
@@ -37,10 +55,23 @@ class Player:
     last_shot_at: float = -999.0
     armor_until: float = 0.0  # timestamp, до которого действует бонус брони
     damage_until: float = 0.0  # timestamp, до которого действует бонус урона
+    speed_boost_until: float = 0.0
+    slow_until: float = 0.0
+    super_until: float = 0.0  # действие супер-power-up из центра карты
+    trap_cooldown_until: float = 0.0  # чтобы одна и та же ловушка не тикала каждый тик
+    last_collision_at: float = -999.0  # антиспам урона при затяжном контакте танк-танк
 
     def lifetime(self) -> float:
         end = self.died_at if self.died_at is not None else time.monotonic()
         return round(end - self.joined_at, 2)
+
+    def current_speed_mult(self, now: float) -> float:
+        mult = 1.0
+        if now < self.speed_boost_until:
+            mult *= SPEED_BOOST_MULT
+        if now < self.slow_until:
+            mult *= SLOW_DEBUFF_MULT
+        return mult
 
     @staticmethod
     def new(nickname: str, x: float, y: float) -> "Player":
@@ -57,6 +88,7 @@ class Bullet:
     vy: float
     damage: int
     size: float = BULLET_SIZE
+    bounces_left: int = BULLET_MAX_BOUNCES
 
     @staticmethod
     def new(owner_id: str, x: float, y: float, angle: float, damage: int) -> "Bullet":
@@ -81,6 +113,14 @@ class Wall:
     y: float
     width: float
     height: float
+    right: float = field(init=False)
+    bottom: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        # предвычислено один раз при создании карты, а не на каждой проверке
+        # коллизии (rect_intersects_walls вызывается ~сотни раз за тик)
+        self.right = self.x + self.width
+        self.bottom = self.y + self.height
 
 
 @dataclass
@@ -88,9 +128,21 @@ class Pickup:
     id: str
     x: float
     y: float
-    kind: str  # "heal" | "armor" | "damage"
+    kind: str  # "heal" | "armor" | "damage" | "speed" | "super"
     size: float = PICKUP_SIZE
 
     @staticmethod
     def new(x: float, y: float, kind: str) -> "Pickup":
         return Pickup(id=str(uuid.uuid4())[:8], x=x, y=y, kind=kind)
+
+
+@dataclass
+class Trap:
+    id: str
+    x: float
+    y: float
+    size: float = TRAP_SIZE
+
+    @staticmethod
+    def new(x: float, y: float) -> "Trap":
+        return Trap(id=str(uuid.uuid4())[:8], x=x, y=y)

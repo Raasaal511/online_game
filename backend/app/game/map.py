@@ -25,9 +25,8 @@ WALLS: list[Wall] = [
     Wall(FIELD_WIDTH / 2 + 150, FIELD_HEIGHT / 2 - 140, 30, 140),
     Wall(FIELD_WIDTH / 2 + 150, FIELD_HEIGHT / 2 + 0, 30, 110),
 
-    # ядро в самом центре — маленькое укрытие внутри крепости
-    Wall(FIELD_WIDTH / 2 - 25, FIELD_HEIGHT / 2 - 25, 50, 50),
-
+    # ядро в центре крепости оставлено открытым — здесь стоит супер-power-up,
+    # так что вместо укрытия здесь открытая площадка под перекрёстным огнём
     # диагональные укрытия во внутреннем кольце (NW/NE/SW/SE)
     Wall(260, 160, 150, 28),
     Wall(260, 160, 28, 130),
@@ -62,3 +61,16 @@ SPAWN_POINTS: list[tuple[float, float]] = [
     (FIELD_WIDTH / 2 - 480, FIELD_HEIGHT / 2 - 120),
     (FIELD_WIDTH / 2 + 480, FIELD_HEIGHT / 2 + 120),
 ]
+
+# Ловушки — фиксированные позиции в 4 проходах крепости: срезать путь через
+# центр рискованно (урон + замедление), в отличие от обхода по внешнему кольцу
+TRAP_POINTS: list[tuple[float, float]] = [
+    (FIELD_WIDTH / 2, FIELD_HEIGHT / 2 - 165),
+    (FIELD_WIDTH / 2, FIELD_HEIGHT / 2 + 165),
+    (FIELD_WIDTH / 2 - 205, FIELD_HEIGHT / 2),
+    (FIELD_WIDTH / 2 + 205, FIELD_HEIGHT / 2),
+]
+
+# Точка супер-power-up — прямо в центральном ядре крепости (самое опасное,
+# но самое ценное место карты; единственная точка спавна для kind="super")
+SUPER_PICKUP_POINT: tuple[float, float] = (FIELD_WIDTH / 2, FIELD_HEIGHT / 2)

@@ -1,12 +1,14 @@
 import { useEffect, useRef } from "react";
 import { useMouseAim } from "../hooks/useMouseAim.js";
 import { createParticleSystem } from "../game/particles.js";
+import { createTrackSystem } from "../game/tracks.js";
 import {
   drawFloor,
   drawWall3D,
   drawPickup3D,
   drawBullet3D,
   drawTank3D,
+  drawTrap3D,
   drawParticles3D,
 } from "../game/render3d.js";
 import {
@@ -24,12 +26,16 @@ const PICKUP_COLORS = {
   heal: "#22c55e",
   armor: "#38bdf8",
   damage: "#f97316",
+  speed: "#facc15",
+  super: "#f472b6",
 };
 
 const PICKUP_LABELS = {
   heal: "+HP",
   armor: "ARM",
   damage: "DMG",
+  speed: "SPD",
+  super: "★★★",
 };
 
 function lerpAngle(a, b, t) {
@@ -47,6 +53,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
   // сглаженные (интерполированные) позиции/углы игроков для плавного рендера
   const smoothRef = useRef(new Map());
   const particlesRef = useRef(createParticleSystem());
+  const tracksRef = useRef(createTrackSystem());
   const lastBulletPos = useRef(new Map());
   const knownAliveState = useRef(new Map());
   const knownPickupIds = useRef(new Set());
@@ -55,6 +62,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
   const fieldWidth = mapInfo.field?.width || 1400;
   const fieldHeight = mapInfo.field?.height || 900;
   const walls = mapInfo.walls || [];
+  const traps = mapInfo.traps || [];
 
   const handleShoot = () => {
     unlockAudio();
@@ -144,6 +152,17 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
 
       particles.update(dt);
 
+      // следы гусениц: используем сглаженные позиции + серверную скорость,
+      // чтобы след появлялся плавно синхронно с визуальным движением танка
+      const tracks = tracksRef.current;
+      const trackSources = (current.players || [])
+        .filter((p) => p.alive)
+        .map((p) => {
+          const s = smooth.get(p.id);
+          return { id: p.id, x: s?.x ?? p.x, y: s?.y ?? p.y, turret_angle: s?.angle ?? p.turret_angle, alive: true, speed: p.speed };
+        });
+      tracks.update(trackSources, timestamp / 1000);
+
       const me = current.players?.find((p) => p.id === playerId);
       const meSmooth = smooth.get(playerId);
 
@@ -168,6 +187,15 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
       ctx.translate(shakeX, shakeY);
 
       drawFloor(ctx, canvas.width, canvas.height);
+
+      // следы гусениц лежат прямо на полу, ниже всех объектов painter's algorithm
+      tracks.draw(ctx);
+
+      // ловушки тоже плоские декали на полу — рисуются перед сортировкой
+      // по глубине, чтобы танки/пули всегда перекрывали их визуально
+      for (const trap of traps) {
+        drawTrap3D(ctx, trap, timestamp / 1000);
+      }
 
       // painter's algorithm: все объекты сцены сортируются по Y (глубине),
       // чтобы дальние перекрывались ближними как в настоящей 3D-сцене
@@ -199,7 +227,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         } else if (obj.type === "pickup") {
           drawPickup3D(ctx, obj.data, PICKUP_COLORS, PICKUP_LABELS, timestamp / 1000);
         } else if (obj.type === "tank") {
-          drawTank3D(ctx, obj.data, obj.data.id === playerId, TANK_SIZE);
+          drawTank3D(ctx, obj.data, obj.data.id === playerId, TANK_SIZE, timestamp / 1000);
         } else if (obj.type === "bullet") {
           drawBullet3D(ctx, obj.data);
         }
@@ -215,7 +243,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
 
     animationFrame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(animationFrame);
-  }, [playerId, walls, sendAim]);
+  }, [playerId, walls, traps, sendAim]);
 
   return (
     <canvas

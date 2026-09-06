@@ -112,6 +112,39 @@ export function drawPickup3D(ctx, pickup, colors, labels, t) {
   ctx.restore();
 }
 
+export function drawTrap3D(ctx, trap, t) {
+  const pulse = 0.5 + 0.5 * Math.sin(t * 4 + trap.x * 0.03);
+  const half = trap.size / 2;
+
+  // низкая площадка чуть утоплена в пол — не мешает painter's algorithm
+  // соседних объектов, но явно читается как опасная зона
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.beginPath();
+  ctx.ellipse(trap.x, trap.y, half + 3, half * 0.5 + 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = `rgba(127, 29, 29, ${0.55 + pulse * 0.25})`;
+  ctx.beginPath();
+  ctx.ellipse(trap.x, trap.y, half, half * 0.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // шипы — треугольники по кругу, слегка "дышат" пульсацией
+  const spikeCount = 6;
+  ctx.fillStyle = `rgba(239, 68, 68, ${0.7 + pulse * 0.3})`;
+  for (let i = 0; i < spikeCount; i++) {
+    const a = (i / spikeCount) * Math.PI * 2;
+    const bx = trap.x + Math.cos(a) * half * 0.55;
+    const by = trap.y + Math.sin(a) * half * 0.55 * 0.5;
+    const spikeLen = 5 + pulse * 3;
+    ctx.beginPath();
+    ctx.moveTo(bx, by - spikeLen);
+    ctx.lineTo(bx - 3, by + 2);
+    ctx.lineTo(bx + 3, by + 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
 export function drawBullet3D(ctx, bullet) {
   const z = 10;
   const r = Math.max(bullet.size, 8);
@@ -146,8 +179,18 @@ export function drawBullet3D(ctx, bullet) {
   ctx.stroke();
 }
 
-export function drawTank3D(ctx, player, isMe, tankSize) {
-  const { x, y, turret_angle: angle, hp, max_hp: maxHp, has_armor: hasArmor } = player;
+export function drawTank3D(ctx, player, isMe, tankSize, t) {
+  const {
+    x,
+    y,
+    turret_angle: angle,
+    hp,
+    max_hp: maxHp,
+    has_armor: hasArmor,
+    has_speed_boost: hasSpeedBoost,
+    has_slow: hasSlow,
+    has_super: hasSuper,
+  } = player;
   const bodyZ = 10;
   const half = tankSize / 2;
 
@@ -162,6 +205,19 @@ export function drawTank3D(ctx, player, isMe, tankSize) {
   const bodyColorLight = isMe ? "#4ade80" : "#7dd3fc";
 
   const topY = screenY(y, bodyZ);
+
+  // ореол супер-бафа — яркое пульсирующее свечение под танком, самый
+  // заметный статус-эффект (редкий мощный power-up из центра карты)
+  if (hasSuper) {
+    const pulse = 0.6 + 0.4 * Math.sin((t ?? 0) * 8);
+    const glow = ctx.createRadialGradient(x, topY, half * 0.3, x, topY, tankSize * 1.3);
+    glow.addColorStop(0, `rgba(250, 204, 21, ${0.45 * pulse})`);
+    glow.addColorStop(1, "rgba(250, 204, 21, 0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(x, topY, tankSize * 1.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   ctx.save();
   ctx.translate(x, 0);
@@ -183,10 +239,32 @@ export function drawTank3D(ctx, player, isMe, tankSize) {
   ctx.fillStyle = bodyGrad;
   ctx.fillRect(-half, topY - half, tankSize, tankSize);
 
-  if (hasArmor) {
-    ctx.strokeStyle = "#38bdf8";
-    ctx.lineWidth = 3;
+  if (hasSlow) {
+    // ледяной оттенок поверх корпуса — читается как "заторможен"
+    ctx.fillStyle = "rgba(56, 189, 248, 0.35)";
+    ctx.fillRect(-half, topY - half, tankSize, tankSize);
+  }
+
+  if (hasArmor || hasSuper) {
+    ctx.strokeStyle = hasSuper ? "#facc15" : "#38bdf8";
+    ctx.lineWidth = hasSuper ? 4 : 3;
     ctx.strokeRect(-half - 2, topY - half - 2, tankSize + 4, tankSize + 4);
+  }
+
+  if (hasSpeedBoost) {
+    // короткие "моторные" штрихи по бокам корпуса вдоль оси движения
+    ctx.strokeStyle = "rgba(250, 204, 21, 0.8)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-half - 6, topY - half + 6);
+    ctx.lineTo(-half - 2, topY - half + 6);
+    ctx.moveTo(-half - 6, topY + half - 6);
+    ctx.lineTo(-half - 2, topY + half - 6);
+    ctx.moveTo(half + 2, topY - half + 6);
+    ctx.lineTo(half + 6, topY - half + 6);
+    ctx.moveTo(half + 2, topY + half - 6);
+    ctx.lineTo(half + 6, topY + half - 6);
+    ctx.stroke();
   }
 
   ctx.restore();

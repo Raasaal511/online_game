@@ -4,7 +4,11 @@ const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000/ws/game";
 
 export function useGameSocket(nickname) {
   const [state, setState] = useState({ players: [], bullets: [], pickups: [] });
-  const [mapInfo, setMapInfo] = useState({ walls: [], field: { width: 1400, height: 900 } });
+  const [mapInfo, setMapInfo] = useState({
+    walls: [],
+    traps: [],
+    field: { width: 1400, height: 900 },
+  });
   const [playerId, setPlayerId] = useState(null);
   const [deathInfo, setDeathInfo] = useState(null);
   const [connected, setConnected] = useState(false);
@@ -15,22 +19,34 @@ export function useGameSocket(nickname) {
     if (!nickname) return;
 
     const ws = new WebSocket(`${WS_URL}?nickname=${encodeURIComponent(nickname)}`);
+    ws.binaryType = "arraybuffer";
     wsRef.current = ws;
+
+    const decoder = new TextDecoder();
 
     ws.onopen = () => setConnected(true);
     ws.onclose = () => setConnected(false);
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+    const handleData = (data) => {
       if (data.type === "welcome") {
         setPlayerId(data.player_id);
-        setMapInfo({ walls: data.walls, field: data.field });
+        setMapInfo({ walls: data.walls, traps: data.traps || [], field: data.field });
       } else if (data.type === "full") {
         setRoomFull(true);
       } else if (data.type === "state") {
         setState(data);
       } else if (data.type === "death") {
         setDeathInfo(data);
+      }
+    };
+
+    ws.onmessage = (event) => {
+      // тик состояния приходит бинарно (orjson) для скорости, остальные
+      // события — обычным текстом; оба ветвятся в один обработчик
+      if (event.data instanceof ArrayBuffer) {
+        handleData(JSON.parse(decoder.decode(event.data)));
+      } else {
+        handleData(JSON.parse(event.data));
       }
     };
 
