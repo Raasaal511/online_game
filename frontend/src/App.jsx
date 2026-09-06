@@ -4,6 +4,7 @@ import GameCanvas from "./components/GameCanvas.jsx";
 import Leaderboard from "./components/Leaderboard.jsx";
 import { useGameSocket } from "./hooks/useGameSocket.js";
 import { useKeyboardInput } from "./hooks/useKeyboardInput.js";
+import { colors, panel, fontFamily } from "./ui/theme.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -56,50 +57,81 @@ export default function App() {
 
   if (roomFull) {
     return (
-      <div style={overlayStyles.box2}>
-        <h2>Комната заполнена</h2>
-        <p>Сейчас играет максимум игроков (10/10). Попробуй зайти чуть позже.</p>
+      <div style={styles.page}>
+        <div style={overlayStyles.box2}>
+          <div style={styles.badge}>⚠️ КОМНАТА ЗАПОЛНЕНА</div>
+          <h2 style={styles.h2}>Все места заняты</h2>
+          <p style={styles.p}>Сейчас играет максимум игроков (10/10). Попробуй зайти чуть позже.</p>
+        </div>
       </div>
     );
   }
 
   const me = state.players?.find((p) => p.id === playerId);
   const sorted = [...(state.players || [])].sort((a, b) => b.kills - a.kills);
+  const hpRatio = me ? Math.max(0, me.hp / me.max_hp) : 1;
 
   return (
-    <div style={{ position: "relative", padding: "16px", fontFamily: "sans-serif" }}>
-      <div style={{ textAlign: "center", color: "white", marginBottom: 8 }}>
-        <span>{connected ? "🟢 Онлайн" : "🔴 Подключение..."}</span>
+    <div style={styles.page}>
+      <div style={styles.hud}>
+        <span style={styles.status}>
+          <span style={{ ...styles.dot, background: connected ? colors.accent : colors.danger }} />
+          {connected ? "Онлайн" : "Подключение..."}
+        </span>
         {me && (
-          <>
-            <span style={{ marginLeft: 16 }}>HP: {me.hp}/{me.max_hp}</span>
-            <span style={{ marginLeft: 16 }}>Убийства: {me.kills}</span>
-            <span style={{ marginLeft: 16 }}>Смерти: {me.deaths}</span>
-          </>
+          <div style={styles.hpGroup}>
+            <div style={styles.hpBarTrack}>
+              <div
+                style={{
+                  ...styles.hpBarFill,
+                  width: `${hpRatio * 100}%`,
+                  background: hpRatio > 0.3 ? colors.accent : colors.danger,
+                }}
+              />
+            </div>
+            <span style={styles.hpText}>{me.hp}/{me.max_hp}</span>
+            <span style={styles.statChip}>⚔️ {me.kills}</span>
+            <span style={styles.statChip}>💀 {me.deaths}</span>
+          </div>
         )}
       </div>
 
-      <GameCanvas
-        state={state}
-        mapInfo={mapInfo}
-        playerId={playerId}
-        sendAim={sendAim}
-        sendShoot={sendShoot}
-      />
-      <Leaderboard scores={leaderboard} />
-      <ScoreBoard players={sorted} playerId={playerId} />
+      <div style={{ position: "relative" }}>
+        <GameCanvas
+          state={state}
+          mapInfo={mapInfo}
+          playerId={playerId}
+          sendAim={sendAim}
+          sendShoot={sendShoot}
+        />
+        <Leaderboard scores={leaderboard} />
+        <ScoreBoard players={sorted} playerId={playerId} />
 
-      {deathInfo && (
-        <div style={overlayStyles.backdrop}>
-          <div style={overlayStyles.box}>
-            <h2>Твой танк уничтожен</h2>
-            <p>Убийств за этот заход: {deathInfo.kills}</p>
-            <p>Прожил {deathInfo.lifetime_seconds.toFixed(1)} секунд</p>
-            {deathInfo.is_new_record && <p style={{ color: "#facc15" }}>🎉 Новый рекорд топ-3!</p>}
-            <p>Респавн через {deathInfo.respawn_in}с...</p>
+        {deathInfo && (
+          <div style={overlayStyles.backdrop}>
+            <div style={overlayStyles.box}>
+              <div style={styles.badge}>💥 ТАНК УНИЧТОЖЕН</div>
+              <h2 style={styles.h2}>Ты погиб</h2>
+              <div style={overlayStyles.statsRow}>
+                <div style={overlayStyles.stat}>
+                  <div style={overlayStyles.statValue}>{deathInfo.kills}</div>
+                  <div style={overlayStyles.statLabel}>убийств</div>
+                </div>
+                <div style={overlayStyles.stat}>
+                  <div style={overlayStyles.statValue}>{deathInfo.lifetime_seconds.toFixed(1)}с</div>
+                  <div style={overlayStyles.statLabel}>прожито</div>
+                </div>
+              </div>
+              {deathInfo.is_new_record && (
+                <p style={{ color: colors.warning, fontWeight: 700, margin: "12px 0 0" }}>
+                  🎉 Новый рекорд топ-3!
+                </p>
+              )}
+              <p style={styles.respawnText}>Респавн через {deathInfo.respawn_in}с...</p>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -107,7 +139,9 @@ export default function App() {
 function ScoreBoard({ players, playerId }) {
   return (
     <div style={overlayStyles.scoreboard}>
-      <h3 style={{ margin: "0 0 8px 0", fontSize: "14px" }}>Игроки ({players.length}/10)</h3>
+      <h3 style={{ margin: "0 0 10px 0", fontSize: "13px", fontWeight: 700 }}>
+        Игроки ({players.length}/10)
+      </h3>
       <ol style={{ listStyle: "none", padding: 0, margin: 0, fontSize: "13px" }}>
         {players.map((p) => (
           <li
@@ -116,8 +150,9 @@ function ScoreBoard({ players, playerId }) {
               display: "flex",
               justifyContent: "space-between",
               gap: "12px",
-              padding: "2px 0",
-              color: p.id === playerId ? "#22c55e" : "white",
+              padding: "3px 0",
+              color: p.id === playerId ? colors.accent : colors.text,
+              fontWeight: p.id === playerId ? 700 : 400,
             }}
           >
             <span>{p.nickname}</span>
@@ -129,42 +164,88 @@ function ScoreBoard({ players, playerId }) {
   );
 }
 
+const styles = {
+  page: {
+    minHeight: "100vh",
+    padding: "16px",
+    fontFamily,
+    background: "radial-gradient(circle at 50% 0%, #1e293b 0%, #0f172a 60%, #060a14 100%)",
+  },
+  badge: {
+    fontSize: "11px",
+    letterSpacing: "1.5px",
+    color: colors.accent,
+    fontWeight: 700,
+  },
+  h2: { margin: "6px 0 4px", fontSize: "22px", color: colors.text },
+  p: { color: colors.textMuted, fontSize: "14px", lineHeight: 1.5 },
+  hud: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "24px",
+    maxWidth: "1400px",
+    margin: "0 auto 12px",
+    padding: "10px 20px",
+    ...panel,
+  },
+  status: { display: "flex", alignItems: "center", gap: "8px", color: colors.text, fontSize: "13px" },
+  dot: { width: "8px", height: "8px", borderRadius: "50%", display: "inline-block" },
+  hpGroup: { display: "flex", alignItems: "center", gap: "10px" },
+  hpBarTrack: {
+    width: "120px",
+    height: "8px",
+    borderRadius: "4px",
+    background: "rgba(255,255,255,0.08)",
+    overflow: "hidden",
+  },
+  hpBarFill: { height: "100%", borderRadius: "4px", transition: "width 0.2s ease" },
+  hpText: { fontSize: "13px", color: colors.text, minWidth: "50px" },
+  statChip: {
+    fontSize: "13px",
+    color: colors.text,
+    background: "rgba(255,255,255,0.06)",
+    padding: "2px 8px",
+    borderRadius: "6px",
+  },
+};
+
 const overlayStyles = {
   backdrop: {
-    position: "fixed",
+    position: "absolute",
     inset: 0,
-    background: "rgba(0,0,0,0.5)",
+    background: "rgba(6, 10, 20, 0.6)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     pointerEvents: "none",
+    borderRadius: "8px",
   },
   box: {
-    background: "rgba(30,41,59,0.95)",
-    color: "white",
-    padding: "32px",
-    borderRadius: "12px",
+    padding: "32px 40px",
     textAlign: "center",
+    minWidth: "280px",
+    ...panel,
   },
   box2: {
-    background: "#1e293b",
-    color: "white",
     padding: "48px",
-    borderRadius: "12px",
     textAlign: "center",
     maxWidth: "400px",
     margin: "80px auto",
-    fontFamily: "sans-serif",
+    ...panel,
   },
+  statsRow: { display: "flex", gap: "24px", justifyContent: "center", margin: "16px 0 0" },
+  stat: { display: "flex", flexDirection: "column", alignItems: "center", gap: "2px" },
+  statValue: { fontSize: "22px", fontWeight: 800, color: colors.text },
+  statLabel: { fontSize: "11px", color: colors.textMuted, textTransform: "uppercase", letterSpacing: "0.5px" },
+  respawnText: { color: colors.textMuted, fontSize: "13px", margin: "16px 0 0" },
   scoreboard: {
     position: "absolute",
     top: 12,
     left: 12,
-    background: "rgba(0,0,0,0.6)",
-    color: "white",
-    padding: "10px 16px",
-    borderRadius: "10px",
-    minWidth: "160px",
-    fontFamily: "sans-serif",
+    minWidth: "170px",
+    padding: "12px 16px",
+    color: colors.text,
+    ...panel,
   },
 };

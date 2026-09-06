@@ -2,6 +2,14 @@ import { useEffect, useRef } from "react";
 import { useMouseAim } from "../hooks/useMouseAim.js";
 import { createParticleSystem } from "../game/particles.js";
 import {
+  drawFloor,
+  drawWall3D,
+  drawPickup3D,
+  drawBullet3D,
+  drawTank3D,
+  drawParticles3D,
+} from "../game/render3d.js";
+import {
   playShotSound,
   playHitSound,
   playExplosionSound,
@@ -54,6 +62,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
   };
 
   const mouseRef = useMouseAim(canvasRef, () => {}, handleShoot);
+  const shakeRef = useRef({ magnitude: 0 });
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -101,6 +110,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         if (!seenBulletIds.has(id)) {
           particles.spawnHitSpark(pos.x, pos.y);
           playHitSound();
+          shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, 2.5);
           lastBulletPos.current.delete(id);
         }
       }
@@ -112,6 +122,7 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
           const pos = smooth.get(p.id) || p;
           particles.spawnExplosion(pos.x, pos.y);
           playExplosionSound();
+          shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, 9);
         }
         knownAliveState.current.set(p.id, p.alive);
       }
@@ -146,49 +157,58 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         }
       }
 
+      // screen-shake: короткий импульс при попадании/взрыве, затухает со временем
+      const shake = shakeRef.current;
+      shake.magnitude *= Math.max(0, 1 - dt * 10);
+      const shakeX = shake.magnitude > 0.05 ? (Math.random() - 0.5) * shake.magnitude : 0;
+      const shakeY = shake.magnitude > 0.05 ? (Math.random() - 0.5) * shake.magnitude : 0;
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#1e293b";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      ctx.translate(shakeX, shakeY);
 
-      // стены
-      ctx.fillStyle = "#475569";
+      drawFloor(ctx, canvas.width, canvas.height);
+
+      // painter's algorithm: все объекты сцены сортируются по Y (глубине),
+      // чтобы дальние перекрывались ближними как в настоящей 3D-сцене
+      const sceneObjects = [];
       for (const w of walls) {
-        ctx.fillRect(w.x, w.y, w.width, w.height);
+        sceneObjects.push({ type: "wall", y: w.y + w.height, data: w });
       }
-
-      // дропы
       for (const pu of current.pickups || []) {
-        ctx.fillStyle = PICKUP_COLORS[pu.kind] || "#fff";
-        ctx.beginPath();
-        ctx.arc(pu.x, pu.y, 10, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "white";
-        ctx.font = "9px sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText(PICKUP_LABELS[pu.kind] || "", pu.x, pu.y + 3);
+        sceneObjects.push({ type: "pickup", y: pu.y, data: pu });
       }
-
-      // танки (рисуем по сглаженным позициям для плавности)
       for (const p of current.players || []) {
         if (!p.alive) continue;
         const s = smooth.get(p.id) || p;
-        drawTank(ctx, { ...p, x: s.x, y: s.y, turret_angle: s.angle }, p.id === playerId);
+        sceneObjects.push({
+          type: "tank",
+          y: s.y,
+          data: { ...p, x: s.x, y: s.y, turret_angle: s.angle },
+        });
       }
-
-      // пули (рисуем крупнее хитбокса, чтобы были заметны на масштабированном canvas)
       for (const b of current.bullets || []) {
-        const r = Math.max(b.size, 8);
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = "#facc15";
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "#7c2d12";
-        ctx.stroke();
+        sceneObjects.push({ type: "bullet", y: b.y, data: b });
       }
 
-      // частицы (взрывы, искры) поверх всего
-      particles.draw(ctx);
+      sceneObjects.sort((a, b) => a.y - b.y);
+
+      for (const obj of sceneObjects) {
+        if (obj.type === "wall") {
+          drawWall3D(ctx, obj.data);
+        } else if (obj.type === "pickup") {
+          drawPickup3D(ctx, obj.data, PICKUP_COLORS, PICKUP_LABELS, timestamp / 1000);
+        } else if (obj.type === "tank") {
+          drawTank3D(ctx, obj.data, obj.data.id === playerId, TANK_SIZE);
+        } else if (obj.type === "bullet") {
+          drawBullet3D(ctx, obj.data);
+        }
+      }
+
+      // частицы (взрывы, искры) поверх всего, с собственной псевдо-3D высотой
+      drawParticles3D(ctx, particles.getParticles());
+
+      ctx.restore();
 
       animationFrame = requestAnimationFrame(draw);
     };
@@ -206,49 +226,12 @@ export default function GameCanvas({ state, mapInfo, playerId, sendAim, sendShoo
         display: "block",
         margin: "0 auto",
         border: "2px solid #334155",
+        borderRadius: "8px",
+        boxShadow: "0 20px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(148, 163, 184, 0.08)",
         cursor: "crosshair",
         maxWidth: "100%",
         height: "auto",
       }}
     />
   );
-}
-
-function drawTank(ctx, player, isMe) {
-  const { x, y, turret_angle: angle, hp, max_hp: maxHp, has_armor: hasArmor } = player;
-
-  // корпус
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.fillStyle = isMe ? "#22c55e" : "#38bdf8";
-  ctx.fillRect(-TANK_SIZE / 2, -TANK_SIZE / 2, TANK_SIZE, TANK_SIZE);
-
-  if (hasArmor) {
-    ctx.strokeStyle = "#38bdf8";
-    ctx.lineWidth = 3;
-    ctx.strokeRect(-TANK_SIZE / 2 - 2, -TANK_SIZE / 2 - 2, TANK_SIZE + 4, TANK_SIZE + 4);
-  }
-
-  // башня + ствол
-  ctx.rotate(angle);
-  ctx.fillStyle = "#0f172a";
-  ctx.beginPath();
-  ctx.arc(0, 0, TANK_SIZE / 3, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillRect(0, -3, TANK_SIZE / 2 + 8, 6);
-  ctx.restore();
-
-  // ник и HP-бар
-  ctx.fillStyle = "white";
-  ctx.font = "11px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText(player.nickname, x, y - TANK_SIZE / 2 - 14);
-
-  const barWidth = TANK_SIZE;
-  const barHeight = 5;
-  const hpRatio = Math.max(0, hp / maxHp);
-  ctx.fillStyle = "#334155";
-  ctx.fillRect(x - barWidth / 2, y - TANK_SIZE / 2 - 10, barWidth, barHeight);
-  ctx.fillStyle = hpRatio > 0.3 ? "#22c55e" : "#ef4444";
-  ctx.fillRect(x - barWidth / 2, y - TANK_SIZE / 2 - 10, barWidth * hpRatio, barHeight);
 }

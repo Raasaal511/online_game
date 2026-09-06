@@ -147,8 +147,8 @@ class GameRoom:
     async def _handle_death(self, player: Player) -> None:
         lifetime = player.lifetime()
         kills = player.kills
-        is_new_record = self._save_score(player.nickname, kills, lifetime)
-        leaderboard = self.get_leaderboard()
+        is_new_record = await asyncio.to_thread(self._save_score, player.nickname, kills, lifetime)
+        leaderboard = await asyncio.to_thread(self.get_leaderboard)
         ws = self.connections.get(player.id)
         if ws is not None:
             try:
@@ -331,7 +331,7 @@ class GameRoom:
 
         async def send_one(pid: str, ws: WebSocket) -> str | None:
             try:
-                await asyncio.wait_for(ws.send_json(payload), timeout=1.0)
+                await asyncio.wait_for(ws.send_json(payload), timeout=0.4)
                 return None
             except Exception:
                 return pid

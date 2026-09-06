@@ -5,8 +5,9 @@ FIELD_HEIGHT = 900
 
 WALL_THICKNESS = 24
 
-# Карта рассчитана на до 10 игроков одновременно: открытые зоны по углам
-# для спавна + набор стен-препятствий в центре и по периметру для тактики/укрытий.
+# Карта v2 — "Крепость": открытое кольцо по периметру для манёвра/спавна,
+# внутреннее укреплённое ядро с четырьмя проходами и рассредоточенные
+# диагональные укрытия в средней зоне. Рассчитана на до 10 игроков.
 WALLS: list[Wall] = [
     # внешние границы (чтобы танки и снаряды не улетали за карту)
     Wall(0, 0, FIELD_WIDTH, WALL_THICKNESS),
@@ -14,40 +15,50 @@ WALLS: list[Wall] = [
     Wall(0, 0, WALL_THICKNESS, FIELD_HEIGHT),
     Wall(FIELD_WIDTH - WALL_THICKNESS, 0, WALL_THICKNESS, FIELD_HEIGHT),
 
-    # центральный крестообразный блок препятствий
-    Wall(FIELD_WIDTH / 2 - 100, FIELD_HEIGHT / 2 - 20, 200, 40),
-    Wall(FIELD_WIDTH / 2 - 20, FIELD_HEIGHT / 2 - 100, 40, 200),
+    # центральное кольцевое укрепление с 4 проходами (крепость)
+    Wall(FIELD_WIDTH / 2 - 180, FIELD_HEIGHT / 2 - 140, 140, 30),
+    Wall(FIELD_WIDTH / 2 + 40, FIELD_HEIGHT / 2 - 140, 140, 30),
+    Wall(FIELD_WIDTH / 2 - 180, FIELD_HEIGHT / 2 + 110, 140, 30),
+    Wall(FIELD_WIDTH / 2 + 40, FIELD_HEIGHT / 2 + 110, 140, 30),
+    Wall(FIELD_WIDTH / 2 - 180, FIELD_HEIGHT / 2 - 140, 30, 140),
+    Wall(FIELD_WIDTH / 2 - 180, FIELD_HEIGHT / 2 + 0, 30, 110),
+    Wall(FIELD_WIDTH / 2 + 150, FIELD_HEIGHT / 2 - 140, 30, 140),
+    Wall(FIELD_WIDTH / 2 + 150, FIELD_HEIGHT / 2 + 0, 30, 110),
 
-    # угловые укрытия
-    Wall(200, 200, 160, 30),
-    Wall(200, 200, 30, 160),
+    # ядро в самом центре — маленькое укрытие внутри крепости
+    Wall(FIELD_WIDTH / 2 - 25, FIELD_HEIGHT / 2 - 25, 50, 50),
 
-    Wall(FIELD_WIDTH - 360, 200, 160, 30),
-    Wall(FIELD_WIDTH - 230, 200, 30, 160),
+    # диагональные укрытия во внутреннем кольце (NW/NE/SW/SE)
+    Wall(260, 160, 150, 28),
+    Wall(260, 160, 28, 130),
 
-    Wall(200, FIELD_HEIGHT - 230, 30, 160),
-    Wall(200, FIELD_HEIGHT - 230, 160, 30),
+    Wall(FIELD_WIDTH - 410, 160, 150, 28),
+    Wall(FIELD_WIDTH - 288, 160, 28, 130),
 
-    Wall(FIELD_WIDTH - 360, FIELD_HEIGHT - 230, 160, 30),
-    Wall(FIELD_WIDTH - 230, FIELD_HEIGHT - 360, 30, 160),
+    Wall(260, FIELD_HEIGHT - 188, 28, 130),
+    Wall(260, FIELD_HEIGHT - 188, 150, 28),
 
-    # дополнительные препятствия по бокам карты
-    Wall(FIELD_WIDTH / 2 - 250, 80, 30, 140),
-    Wall(FIELD_WIDTH / 2 + 220, FIELD_HEIGHT - 220, 30, 140),
-    Wall(80, FIELD_HEIGHT / 2 - 70, 140, 30),
-    Wall(FIELD_WIDTH - 220, FIELD_HEIGHT / 2 + 40, 140, 30),
+    Wall(FIELD_WIDTH - 288, FIELD_HEIGHT - 290, 28, 130),
+    Wall(FIELD_WIDTH - 410, FIELD_HEIGHT - 188, 150, 28),
+
+    # короткие простреливаемые баррикады у боковых проходов
+    Wall(FIELD_WIDTH / 2 - 15, 90, 30, 110),
+    Wall(FIELD_WIDTH / 2 - 15, FIELD_HEIGHT - 200, 30, 110),
+    Wall(160, FIELD_HEIGHT / 2 - 15, 130, 30),
+    Wall(FIELD_WIDTH - 290, FIELD_HEIGHT / 2 - 15, 130, 30),
 ]
 
-# Точки спавна игроков — по периметру карты, вдали от центральных стен
+# Точки спавна игроков — вынесены во внешнее открытое кольцо, подальше от
+# крепости и внутренних укрытий, чтобы респавн не попадал под обстрел центра
 SPAWN_POINTS: list[tuple[float, float]] = [
-    (100, 100),
-    (FIELD_WIDTH - 100, 100),
-    (100, FIELD_HEIGHT - 100),
-    (FIELD_WIDTH - 100, FIELD_HEIGHT - 100),
-    (FIELD_WIDTH / 2, 100),
-    (FIELD_WIDTH / 2, FIELD_HEIGHT - 100),
-    (100, FIELD_HEIGHT / 2),
-    (FIELD_WIDTH - 100, FIELD_HEIGHT / 2),
-    (FIELD_WIDTH / 2 - 300, FIELD_HEIGHT / 2 - 250),
-    (FIELD_WIDTH / 2 + 300, FIELD_HEIGHT / 2 + 250),
+    (80, 80),
+    (FIELD_WIDTH - 80, 80),
+    (80, FIELD_HEIGHT - 80),
+    (FIELD_WIDTH - 80, FIELD_HEIGHT - 80),
+    (FIELD_WIDTH / 2, 60),
+    (FIELD_WIDTH / 2, FIELD_HEIGHT - 60),
+    (60, FIELD_HEIGHT / 2),
+    (FIELD_WIDTH - 60, FIELD_HEIGHT / 2),
+    (FIELD_WIDTH / 2 - 480, FIELD_HEIGHT / 2 - 120),
+    (FIELD_WIDTH / 2 + 480, FIELD_HEIGHT / 2 + 120),
 ]
