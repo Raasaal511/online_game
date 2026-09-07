@@ -54,9 +54,14 @@ ULTIMATE_DIRECT_DAMAGE = 90
 ULTIMATE_SPLASH_RADIUS = 140.0
 ULTIMATE_SPLASH_DAMAGE = 70
 
-# Телепорт: короткий прыжок в направлении курсора, ограничен кулдауном
-TELEPORT_COOLDOWN = 8.0
-TELEPORT_DISTANCE = 260.0
+# Порталы: пара точек у стен, спавнится/исчезает динамически. Заезд танка в
+# один портал телепортирует к его паре — не отдельная способность игрока
+# (заменили Shift-прыжок по курсору), а объект карты, доступный всем.
+PORTAL_SIZE = 30.0
+PORTAL_LIFETIME = 25.0  # сек, сколько живёт пара порталов до исчезновения
+PORTAL_MIN_INTERVAL = 15.0  # сек между появлением новых пар (от исчезновения предыдущей)
+PORTAL_MAX_INTERVAL = 30.0
+PORTAL_COOLDOWN_AFTER_USE = 1.0  # сек неактивности портала для игрока сразу после телепортации (не отскакивает туда-обратно)
 
 # Скин пушки: чисто косметический выбор в главном меню, не влияет на баланс —
 # сервер только хранит и рассылает выбор, вся отрисовка цвета на клиенте
@@ -220,7 +225,7 @@ class Player:
     ammo: int = GUNNER_MAG_SIZE  # актуально только для gunner — остаток патронов в магазине
     reload_until: float = 0.0  # timestamp окончания автоперезарядки gunner
     ultimate_kills: int = 0  # счётчик убийств до готовности ульты (сбрасывается при использовании)
-    teleport_ready_at: float = 0.0  # timestamp, когда телепорт снова доступен
+    portal_cooldown_until: float = 0.0  # антидребезг: сразу после телепортации свой портал/пара временно неактивны для игрока
     gun_skin: str = DEFAULT_GUN_SKIN  # косметический выбор в меню — не влияет на баланс
 
     def lifetime(self) -> float:
@@ -445,3 +450,19 @@ class Nuke:
     @staticmethod
     def new(x: float, y: float, now: float, radius: float) -> "Nuke":
         return Nuke(id=str(uuid.uuid4())[:8], x=x, y=y, spawned_at=now, radius=radius)
+
+
+@dataclass
+class Portal:
+    # один портал из пары — хранит id своей пары (link_id), чтобы найти,
+    # куда телепортировать при заезде. Обе половины пары рождаются и
+    # умирают одновременно (spawned_at общий, отдельных id для удаления по паре не нужно).
+    id: str
+    x: float
+    y: float
+    link_id: str  # id противоположного портала той же пары
+    spawned_at: float
+
+    @staticmethod
+    def new(x: float, y: float, link_id: str, now: float) -> "Portal":
+        return Portal(id=str(uuid.uuid4())[:8], x=x, y=y, link_id=link_id, spawned_at=now)

@@ -9,6 +9,7 @@ from fastapi import WebSocket
 from app.game.weapons import WeaponMixin
 from app.game.miniboss import MinibossMixin, apply_miniboss_kill_reward
 from app.game.nuke import NukeMixin
+from app.game.portals import PortalMixin
 from app.game.entities import (
     Player,
     Bullet,
@@ -50,6 +51,7 @@ from app.game.entities import (
     TANK_CLASSES,
     DEFAULT_TANK_CLASS,
     GUNNER_MAG_SIZE,
+    GUNNER_RELOAD_TIME,
     ULTIMATE_KILLS_REQUIRED,
     GUN_SKINS,
     DEFAULT_GUN_SKIN,
@@ -107,7 +109,7 @@ CHAT_HISTORY_SIZE = 30
 CHAT_MIN_INTERVAL = 0.5  # сек между сообщениями чата от одного игрока
 
 
-class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
+class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
     def __init__(self) -> None:
         self.players: dict[str, Player] = {}
         self.bullets: dict[str, Bullet] = {}
@@ -140,6 +142,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._round_end_banner_until: float | None = None  # пока не None — идёт показ баннера победителя
         self._round_winner: dict | None = None  # {"nickname", "kills"} — последний объявленный победитель
         self._round_ended_event: dict | None = None  # разовое событие конца раунда для текущего тика
+        self._init_portals()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
 
@@ -176,6 +179,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._laser_shots = []
         self._teleports = []
         self._round_ended_event = None
+        self._portal_events = []
 
         self._process_round(now)
         self._spawn_pickups(elapsed)
@@ -184,6 +188,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._process_bombs(now)
         self._spawn_nuke(now)
         self._process_nuke(now)
+        self._spawn_portals(now)
         self._process_wall_respawns(now)
         self._process_respawns(now)
         self._process_gunner_reload(now)
@@ -196,6 +201,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         self._check_pickup_collisions(now)
         self._check_trap_collisions(now)
         self._check_tank_collisions(now)
+        self._process_portals(now)
 
     def _process_round(self, now: float) -> None:
         # пока показывается баннер победителя — ждём ROUND_END_BANNER_DURATION,
@@ -238,7 +244,12 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
             player.ultimate_kills = 0
             player.max_hp = TANK_MAX_HP
             self._pending_respawns.pop(player_id, None)
-            self._respawn(player_id)
+            # если игрок мёртвым выбрал класс через select_class прямо перед
+            # концом раунда — реванш должен уважать этот выбор, а не молча
+            # проигнорировать его и оставить "зависшим" на следующую обычную
+            # смерть уже в новом раунде
+            tank_class = self._pending_respawn_class.pop(player_id, None)
+            self._respawn(player_id, tank_class)
 
     def _move_players(self, now: float) -> None:
         for player in self.players.values():
@@ -557,7 +568,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
             player.tank_class = tank_class
         player.ammo = GUNNER_MAG_SIZE
         player.reload_until = 0.0
-        player.teleport_ready_at = 0.0
+        player.portal_cooldown_until = 0.0
         # ultimate_kills НЕ обнуляем: копится за всю сессию так же, как kills —
         # риск/фарм-петля уровня намеренно жёстче (сбрасывается на смерти),
         # но ульта — награда за суммарный вклад в игру, а не за одну жизнь
@@ -809,9 +820,13 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
                     "ammo": p.ammo,
                     "ammo_max": GUNNER_MAG_SIZE,
                     "reloading": p.tank_class == "gunner" and now < p.reload_until,
+                    "reload_progress": (
+                        max(0.0, min(1.0, 1 - (p.reload_until - now) / GUNNER_RELOAD_TIME))
+                        if p.tank_class == "gunner" and now < p.reload_until
+                        else 1.0
+                    ),
                     "ultimate_kills": p.ultimate_kills,
                     "ultimate_ready": p.ultimate_kills >= ULTIMATE_KILLS_REQUIRED,
-                    "teleport_cooldown": max(0.0, round(p.teleport_ready_at - now, 1)),
                     "laser_charging": (
                         {
                             "angle": p.laser_angle,
@@ -889,6 +904,11 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
             ),
             "round_end": self._round_ended_event,
             "leaderboard": self._live_leaderboard(),
+            "portals": [
+                {"id": p.id, "x": p.x, "y": p.y, "link_id": p.link_id}
+                for p in self.portals.values()
+            ],
+            "portal_events": self._portal_events,
         }
 
         # сериализуем payload один раз за тик (не по разу на каждого клиента) —

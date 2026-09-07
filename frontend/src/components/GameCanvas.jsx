@@ -20,6 +20,7 @@ import {
   drawLaserCharge3D,
   drawLaserShot3D,
   drawTeleportEffect3D,
+  drawPortal3D,
   drawWallBreakEffect3D,
   drawWallHitSpark3D,
   drawParticles3D,
@@ -42,6 +43,7 @@ import {
   playWallHitSound,
   playWallBreakSound,
   playTeleportSound,
+  playPortalSpawnSound,
   playSniperShotSound,
   playBrawlerShotSound,
   playUltimateFireSound,
@@ -94,7 +96,6 @@ export default function GameCanvas({
   playerId,
   sendAim,
   sendShoot,
-  sendTeleport,
   sendUltimate,
   onGameEvent,
 }) {
@@ -163,16 +164,7 @@ export default function GameCanvas({
   );
   const shakeRef = useRef({ magnitude: 0 });
 
-  const handleTeleport = () => {
-    const current = stateRef.current;
-    const me = current.players?.find((p) => p.id === playerId);
-    if (!me || !me.alive) return;
-    const dx = mouseRef.current.x - me.x;
-    const dy = mouseRef.current.y - me.y;
-    sendTeleport(Math.atan2(dy, dx));
-  };
-
-  useActionKeys(handleTeleport, sendUltimate);
+  useActionKeys(sendUltimate);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -417,6 +409,14 @@ export default function GameCanvas({
         eff.age += dt / 0.35;
       }
       teleportEffectsRef.current = teleportEffectsRef.current.filter((e) => e.age < 1);
+
+      // новая пара порталов появилась/исчезла на карте -> звук (не привязан
+      // к конкретному игроку, слышен всем — это событие карты, не способность)
+      if (isNewTick) {
+        for (const ev of current.portal_events || []) {
+          if (ev.type === "spawn") playPortalSpawnSound();
+        }
+      }
       for (const shot of laserShotsRef.current) {
         shot.age += dt / LASER_SHOT_LIFETIME;
       }
@@ -498,7 +498,19 @@ export default function GameCanvas({
       const tracks = tracksRef.current;
       for (const t of aliveTanksData) {
         if ((t.speed ?? 0) > 100 && Math.random() < 0.3) {
-          particles.spawnDust(t.x, t.y, t.moveAngle, t.speed);
+          // пыль вылетает из-под гусениц (по бокам корпуса), не из
+          // геометрического центра танка — раньше клубы пыли рождались
+          // прямо посередине силуэта, что выглядело нефизично
+          const perpX = Math.cos(t.moveAngle + Math.PI / 2);
+          const perpY = Math.sin(t.moveAngle + Math.PI / 2);
+          const side = Math.random() < 0.5 ? 1 : -1;
+          const trackOffset = t.size * 0.32;
+          particles.spawnDust(
+            t.x + perpX * trackOffset * side,
+            t.y + perpY * trackOffset * side,
+            t.moveAngle,
+            t.speed
+          );
         }
       }
       tracks.update(
@@ -628,6 +640,9 @@ export default function GameCanvas({
       for (const pu of current.pickups || []) {
         sceneObjects.push({ type: "pickup", y: pu.y, data: pu });
       }
+      for (const portal of current.portals || []) {
+        sceneObjects.push({ type: "portal", y: portal.y, data: portal });
+      }
       for (const t of aliveTanksData) {
         sceneObjects.push({
           type: "tank",
@@ -646,6 +661,8 @@ export default function GameCanvas({
           drawWall3D(ctx, obj.data);
         } else if (obj.type === "pickup") {
           drawPickup3D(ctx, obj.data, PICKUP_COLORS, timestamp / 1000);
+        } else if (obj.type === "portal") {
+          drawPortal3D(ctx, obj.data, timestamp / 1000);
         } else if (obj.type === "tank") {
           if (obj.data.is_flaming) {
             drawFlameCone3D(ctx, obj.data, timestamp / 1000);
@@ -655,34 +672,70 @@ export default function GameCanvas({
           // эффект разгона: сервер шлёт speed раз в тик (~33мс), а кадры рендера
           // идут на 60fps (~16мс) — сравнение "сырой" скорости между соседними
           // КАДРАМИ давало на каждом новом тике скачкообразную, шумную дельту
-          // (корпус резко дёргался в сторону). EMA сглаживает и скорость, и
-          // направление движения по времени, а не по кадру — стабильно и плавно.
+          // (корпус резко дёргался в сторону). EMA сглаживает скорость по
+          // времени, а не по кадру — стабильно и плавно.
           let motion = motionSmoothRef.current.get(obj.data.id);
           if (!motion) {
-            motion = { emaSpeed: 0, dirX: Math.cos(obj.data.turret_angle), dirY: Math.sin(obj.data.turret_angle) };
+            motion = {
+              emaSpeed: 0,
+              dirX: Math.cos(obj.data.turret_angle),
+              dirY: Math.sin(obj.data.turret_angle),
+              wasMoving: false,
+            };
           }
           const rawSpeed = obj.data.speed ?? 0;
           const speedAlpha = Math.min(1, dt * 8); // ~125мс до устаканивания
           const prevEmaSpeed = motion.emaSpeed;
           motion.emaSpeed += (rawSpeed - motion.emaSpeed) * speedAlpha;
           if (rawSpeed > 20) {
-            // направление движения обновляем только когда танк реально едет —
-            // на скорости ~0 vx/vy шумят и направление не имеет смысла
-            const dirAlpha = Math.min(1, dt * 10);
             const targetDirX = obj.data.vx / rawSpeed;
             const targetDirY = obj.data.vy / rawSpeed;
-            motion.dirX += (targetDirX - motion.dirX) * dirAlpha;
-            motion.dirY += (targetDirY - motion.dirY) * dirAlpha;
+            if (!motion.wasMoving) {
+              // старт движения с места (или после полной остановки) — корпус
+              // сразу смотрит туда, куда едет, без "довода" через EMA. Раньше
+              // dirX/dirY на старте наследовалось от угла ПРИЦЕЛА (турели), и
+              // если игрок целился в одну сторону, а поехал в другую, EMA
+              // несколько кадров "доводил" направление корпуса — читалось как
+              // рывок/дёрганье в момент старта и как "странный" поворот.
+              motion.dirX = targetDirX;
+              motion.dirY = targetDirY;
+            } else {
+              // уже едем — плавно доворачиваем направление корпуса при смене курса
+              const dirAlpha = Math.min(1, dt * 10);
+              motion.dirX += (targetDirX - motion.dirX) * dirAlpha;
+              motion.dirY += (targetDirY - motion.dirY) * dirAlpha;
+            }
+            motion.wasMoving = true;
+          } else {
+            motion.wasMoving = false;
           }
           motionSmoothRef.current.set(obj.data.id, motion);
 
           const accelBoost = Math.max(0, Math.min(1, (motion.emaSpeed - prevEmaSpeed) / dt / 400));
           const moveAngle = Math.atan2(motion.dirY, motion.dirX);
 
-          // резкий разгон с места — всплеск пыли из-под гусениц, отдельно
-          // от обычной пыли на ходу (та зависит только от текущей скорости)
+          // резкий разгон с места — всплеск пыли из-под гусениц (по бокам
+          // корпуса, не из центра), отдельно от обычной пыли на ходу (та
+          // зависит только от текущей скорости)
           if (accelBoost > 0.4) {
-            particles.spawnDust(obj.data.x, obj.data.y, moveAngle, motion.emaSpeed, true);
+            const burstSize = obj.data.is_miniboss ? MINIBOSS_TANK_SIZE : TANK_SIZE;
+            const perpX = Math.cos(moveAngle + Math.PI / 2);
+            const perpY = Math.sin(moveAngle + Math.PI / 2);
+            const trackOffset = burstSize * 0.32;
+            particles.spawnDust(
+              obj.data.x + perpX * trackOffset,
+              obj.data.y + perpY * trackOffset,
+              moveAngle,
+              motion.emaSpeed,
+              true
+            );
+            particles.spawnDust(
+              obj.data.x - perpX * trackOffset,
+              obj.data.y - perpY * trackOffset,
+              moveAngle,
+              motion.emaSpeed,
+              true
+            );
           }
 
           drawTank3D(ctx, obj.data, obj.data.id === playerId, TANK_SIZE, timestamp / 1000, kickback, accelBoost, moveAngle);

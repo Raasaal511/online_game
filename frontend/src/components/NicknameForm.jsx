@@ -96,12 +96,12 @@ export default function NicknameForm({ onSubmit }) {
             <span style={styles.controlText}>подобранное оружие с карты (доп. к классу)</span>
           </div>
           <div style={styles.controlRow}>
-            <span style={styles.keyChip}>Shift</span>
-            <span style={styles.controlText}>телепорт в направлении прицела</span>
-          </div>
-          <div style={styles.controlRow}>
             <span style={styles.keyChip}>Пробел</span>
             <span style={styles.controlText}>ульта (копится за 5 убийств)</span>
+          </div>
+          <div style={styles.controlRow}>
+            <span style={styles.keyChip}>Портал</span>
+            <span style={styles.controlText}>заезжай — переносит к парному порталу</span>
           </div>
           <div style={styles.controlRow}>
             <span style={styles.keyChip}>Дропы</span>

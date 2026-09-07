@@ -46,8 +46,6 @@ from app.game.entities import (
     ULTIMATE_DIRECT_DAMAGE,
     ULTIMATE_SPLASH_RADIUS,
     ULTIMATE_SPLASH_DAMAGE,
-    TELEPORT_COOLDOWN,
-    TELEPORT_DISTANCE,
     TANK_CLASSES,
     DEFAULT_TANK_CLASS,
 )
@@ -226,31 +224,6 @@ class WeaponMixin:
                 kind="cannon",
             )
             self.bullets[bullet.id] = bullet
-
-    def try_teleport(self, player_id: str, angle: float) -> None:
-        player = self.players.get(player_id)
-        if player is None or not player.alive:
-            return
-        now = time.monotonic()
-        if now < player.teleport_ready_at:
-            return
-        player.teleport_ready_at = now + TELEPORT_COOLDOWN
-
-        from app.game.room import rect_intersects_walls
-
-        target_x = player.x + math.cos(angle) * TELEPORT_DISTANCE
-        target_y = player.y + math.sin(angle) * TELEPORT_DISTANCE
-        # если целевая точка внутри стены — сокращаем дистанцию шагами, пока
-        # не найдём свободное место (или не откажемся от прыжка совсем)
-        for frac in (1.0, 0.75, 0.5, 0.25):
-            tx = player.x + math.cos(angle) * TELEPORT_DISTANCE * frac
-            ty = player.y + math.sin(angle) * TELEPORT_DISTANCE * frac
-            if not rect_intersects_walls(tx, ty, player.size):
-                player.x, player.y = tx, ty
-                self._teleports.append({"player_id": player.id, "x": tx, "y": ty})
-                return
-        # даже минимальный шаг заблокирован — прыжок отменяется, но кулдаун
-        # уже потрачен (намеренно: не даёт спамить попытки телепорта у стены)
 
     def try_ultimate(self, player_id: str) -> None:
         player = self.players.get(player_id)

@@ -459,6 +459,7 @@ export function drawPickup3D(ctx, pickup, colors, t) {
   const z = 14 + bob;
   const shadowScale = 1 - z / 60;
   const isSuper = pickup.kind === "super";
+  const color = colors[pickup.kind] || "#fff";
 
   // тень на полу
   ctx.fillStyle = "rgba(0,0,0,0.4)";
@@ -468,37 +469,54 @@ export function drawPickup3D(ctx, pickup, colors, t) {
 
   const py = screenY(pickup.y, z);
 
-  if (isSuper) {
-    // редкий power-up получает дополнительное пульсирующее кольцо, чтобы
-    // выделяться среди обычных дропов ещё до подбора
-    const pulse = 0.5 + 0.5 * Math.sin(t * 5);
-    const ring = ctx.createRadialGradient(pickup.x, py, 4, pickup.x, py, 18 + pulse * 4);
-    ring.addColorStop(0, "rgba(244, 114, 182, 0.5)");
-    ring.addColorStop(1, "rgba(244, 114, 182, 0)");
-    ctx.fillStyle = ring;
-    ctx.beginPath();
-    ctx.arc(pickup.x, py, 18 + pulse * 4, 0, Math.PI * 2);
-    ctx.fill();
-  }
+  // ambient-свечение под капсулой — читается издалека как "здесь лут",
+  // раньше единственным сигналом был сам маленький кружок вблизи
+  const pulse = 0.5 + 0.5 * Math.sin(t * (isSuper ? 5 : 3.2));
+  const glowR = (isSuper ? 22 : 16) + pulse * (isSuper ? 4 : 2.5);
+  const glow = ctx.createRadialGradient(pickup.x, py, 2, pickup.x, py, glowR);
+  glow.addColorStop(0, `${color}55`);
+  glow.addColorStop(1, `${color}00`);
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(pickup.x, py, glowR, 0, Math.PI * 2);
+  ctx.fill();
 
   ctx.save();
   ctx.translate(pickup.x, py);
 
+  // капсула вращается вокруг вертикальной оси — сплющивается в эллипс на
+  // пол-оборота, имитируя 3D-вращение на плоском canvas (как классические
+  // аркадные "монетки"), а не статично висящий плоский кружок
+  const spin = t * 2.2 + pickup.x * 0.01;
+  const squash = Math.cos(spin);
   const radius = isSuper ? 12 : 10;
-  const grad = ctx.createRadialGradient(-2, -2, 1, 0, 0, radius);
-  const color = colors[pickup.kind] || "#fff";
+
+  // рант капсулы (боковая грань) — виден только когда squash близко к 0
+  // (капсула повёрнута почти ребром), делает вращение физически убедительным
+  if (Math.abs(squash) < 0.35) {
+    ctx.fillStyle = shadeColor(color, -0.4);
+    ctx.beginPath();
+    ctx.ellipse(0, 0, radius * 0.18, radius, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const grad = ctx.createRadialGradient(-2, -3, 1, 0, 0, radius);
   grad.addColorStop(0, "#ffffff");
-  grad.addColorStop(0.4, color);
-  grad.addColorStop(1, color);
+  grad.addColorStop(0.35, color);
+  grad.addColorStop(1, shadeColor(color, -0.25));
   ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.arc(0, 0, radius, 0, Math.PI * 2);
+  ctx.ellipse(0, 0, Math.max(2, radius * Math.abs(squash)), radius, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,0.4)";
+  ctx.strokeStyle = "rgba(255,255,255,0.5)";
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  drawIcon(ctx, pickup.kind, "#0f172a", 0.85);
+  // иконка видна только на "лицевой" половине оборота — не искажаем её
+  // вместе со сплющиванием эллипса, просто скрываем/показываем целиком
+  if (squash > 0) {
+    drawIcon(ctx, pickup.kind, "#0f172a", 0.85);
+  }
   ctx.restore();
 }
 
@@ -849,6 +867,79 @@ export function drawTeleportEffect3D(ctx, effect, age) {
   ctx.stroke();
 }
 
+// синхронизировано с PORTAL_SIZE на сервере
+const PORTAL_RADIUS = 15.0;
+
+// Портал — стоячий вертикальный овал с вращающейся спиралью внутри и
+// неоновой зелёно-жёлтой рамкой (характерный "Рик и Морти" стиль), а не
+// плоская декаль на полу — это проём, через который танк проезжает.
+export function drawPortal3D(ctx, portal, t) {
+  const z = 0;
+  const py = screenY(portal.y, z);
+  const pulse = 0.7 + 0.3 * Math.sin(t * 3 + portal.x * 0.02);
+  const rx = PORTAL_RADIUS * pulse;
+  const ry = PORTAL_RADIUS * 1.4 * pulse; // вытянут по вертикали — стоячий проём, не лужа на полу
+
+  // тень на полу под порталом
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.beginPath();
+  ctx.ellipse(portal.x, portal.y, rx * 0.8, rx * 0.35, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // внешнее свечение — неоновый зелёный ореол, видимый издалека
+  const glow = ctx.createRadialGradient(portal.x, py, 2, portal.x, py, rx * 2.6);
+  glow.addColorStop(0, "rgba(74, 222, 128, 0.45)");
+  glow.addColorStop(1, "rgba(74, 222, 128, 0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(portal.x, py, rx * 2.6, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(portal.x, py);
+
+  // само "жерло" портала — тёмно-изумрудный овал
+  const bodyGrad = ctx.createRadialGradient(-rx * 0.2, -ry * 0.2, 1, 0, 0, rx);
+  bodyGrad.addColorStop(0, "#0f2e1a");
+  bodyGrad.addColorStop(1, "#022c14");
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // спираль внутри — несколько вращающихся дуг разной яркости, классический
+  // "портальный" вихрь вместо статичного кольца
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+  ctx.clip();
+  const spinBase = t * 2.4;
+  for (let i = 0; i < 3; i++) {
+    const spinAngle = spinBase + (i / 3) * Math.PI * 2;
+    const arcR = rx * (0.35 + i * 0.28);
+    ctx.strokeStyle = i % 2 === 0 ? "rgba(134, 239, 172, 0.8)" : "rgba(74, 222, 128, 0.55)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, arcR, arcR * (ry / rx), spinAngle, 0, Math.PI * 1.3);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // неоновая рамка — двойной контур (насыщенный зелёный снаружи, бледно-жёлтый внутри)
+  ctx.strokeStyle = `rgba(21, 128, 61, ${0.9})`;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = `rgba(190, 242, 100, ${0.55 + 0.25 * pulse})`;
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rx * 0.88, ry * 0.88, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
 export function drawBomb3D(ctx, bomb, t) {
   const pulse = 0.5 + 0.5 * Math.sin(t * 12);
   const ringRadius = bomb.radius * (0.3 + bomb.fuse_progress * 0.7);
@@ -1118,10 +1209,15 @@ export function drawTank3D(
   // чем выше уровень — тем крупнее и золотистее танк (визуальный статус
   // прокачки, помимо цифры в бейдже): растёт плавно, не рывками
   const levelProgress = isMiniboss ? 0 : (level - 1) / 4; // 0..1 (LEVEL_MAX=5)
+  // супер-бафф раздувает сам корпус (не просто добавляет свечение вокруг
+  // неизменного квадрата) — заметная пульсация размера, читается как "танк
+  // стал мощнее", а не как отдельный декоративный ореол вокруг него
+  const superPulse = hasSuper ? 1 + 0.06 * Math.sin((t ?? 0) * 8) : 1;
+  const superGrow = hasSuper ? 1.35 * superPulse : 1;
   // мини-босс втрое крупнее обычного танка — синхронизировано с MINIBOSS_SIZE
   // на сервере (96 vs 32), должен читаться как настоящий босс, а не чуть
   // подросший игрок
-  const tankSize = isMiniboss ? baseTankSize * 3 : baseTankSize * (1 + levelProgress * 0.22);
+  const tankSize = isMiniboss ? baseTankSize * 3 : baseTankSize * (1 + levelProgress * 0.22) * superGrow;
   const bodyZ = isMiniboss ? 22 : 10; // мини-босс визуально заметно выше обычных танков
   const half = tankSize / 2;
 
@@ -1173,6 +1269,15 @@ export function drawTank3D(
     bodyColorLight = mixColor(bodyColorLight, "#fef08a", levelProgress * 0.75);
   }
 
+  // супер-бафф красит корпус в яркое золото почти целиком — сильнее и
+  // однозначнее уровневого подмешивания, сам танк выглядит "заряженным",
+  // а не просто светится снаружи неизменный цветной квадрат
+  if (hasSuper) {
+    bodyColor = mixColor(bodyColor, "#fde047", 0.85);
+    bodyColorDark = mixColor(bodyColorDark, "#b45309", 0.85);
+    bodyColorLight = mixColor(bodyColorLight, "#fef9c3", 0.85);
+  }
+
   // угрожающее пульсирующее свечение вокруг мини-босса — виден издалека.
   // Двухслойное: медленный широкий пульс "присутствия" + быстрый узкий
   // "тревожный" импульс поверх — раньше был один слой и читался вяло для
@@ -1199,16 +1304,18 @@ export function drawTank3D(
 
   const topY = screenY(y, bodyZ);
 
-  // ореол супер-бафа — яркое пульсирующее свечение под танком, самый
-  // заметный статус-эффект (редкий мощный power-up из центра карты)
+  // тонкое золотое ambient-свечение вокруг уже увеличенного золотого корпуса —
+  // дополняет, а не заменяет изменение самого танка (раньше это было
+  // единственным признаком баффа: неизменный цветной квадрат со светящимся
+  // кольцом вокруг, что и читалось как "просто подсвеченный квадрат")
   if (hasSuper) {
     const pulse = 0.6 + 0.4 * Math.sin((t ?? 0) * 8);
-    const glow = ctx.createRadialGradient(x, topY, half * 0.3, x, topY, tankSize * 1.3);
-    glow.addColorStop(0, `rgba(250, 204, 21, ${0.45 * pulse})`);
+    const glow = ctx.createRadialGradient(x, topY, half * 0.5, x, topY, tankSize * 0.9);
+    glow.addColorStop(0, `rgba(250, 204, 21, ${0.35 * pulse})`);
     glow.addColorStop(1, "rgba(250, 204, 21, 0)");
     ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.arc(x, topY, tankSize * 1.3, 0, Math.PI * 2);
+    ctx.arc(x, topY, tankSize * 0.9, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -1478,6 +1585,39 @@ export function drawTank3D(
     ctx.fillStyle = isMiniboss ? "#dc2626" : hpRatio > 0.3 ? "#22c55e" : "#ef4444";
     ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth * hpRatio, barHeight);
     ctx.shadowColor = "transparent";
+
+    // прогресс-бары готовности (ульта / патроны gunner) — прямо у танка,
+    // видно не отвлекаясь на HUD в углу экрана. Только для своего танка:
+    // чужой прогресс ульты/патронов игроку не нужен и загромождал бы экран.
+    if (isMe && !isMiniboss) {
+      const subBarY = topY - half - 10 + barHeight + 3;
+      const subBarHeight = 3.5;
+      let barIndex = 0;
+
+      if (player.tank_class === "gunner") {
+        const ammoRatio = player.reloading
+          ? Math.max(0, Math.min(1, player.reload_progress ?? 0))
+          : Math.max(0, (player.ammo ?? 0) / (player.ammo_max || 1));
+        const y = subBarY + barIndex * (subBarHeight + 2);
+        ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
+        ctx.fillRect(x - barWidth / 2, y, barWidth, subBarHeight);
+        ctx.fillStyle = player.reloading ? "#f59e0b" : "#38bdf8";
+        ctx.fillRect(x - barWidth / 2, y, barWidth * ammoRatio, subBarHeight);
+        barIndex++;
+      }
+
+      const ultimateRatio = Math.max(0, Math.min(1, (player.ultimate_kills ?? 0) / 5));
+      const uy = subBarY + barIndex * (subBarHeight + 2);
+      ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
+      ctx.fillRect(x - barWidth / 2, uy, barWidth, subBarHeight);
+      if (player.ultimate_ready) {
+        const readyPulse = 0.6 + 0.4 * Math.sin((t ?? 0) * 10);
+        ctx.fillStyle = `rgba(250, 204, 21, ${0.7 + 0.3 * readyPulse})`;
+      } else {
+        ctx.fillStyle = "#a855f7";
+      }
+      ctx.fillRect(x - barWidth / 2, uy, barWidth * ultimateRatio, subBarHeight);
+    }
   }
 
   // указатель "это я" сразу после респавна — на большой карте с 10 танками

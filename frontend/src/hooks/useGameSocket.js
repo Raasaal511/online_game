@@ -115,13 +115,6 @@ export function useGameSocket(nickname, tankClass = "gunner", gunSkin = "steel")
     }
   }, []);
 
-  const sendTeleport = useCallback((angle) => {
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "teleport", angle }));
-    }
-  }, []);
-
   const sendUltimate = useCallback(() => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -158,7 +151,6 @@ export function useGameSocket(nickname, tankClass = "gunner", gunSkin = "steel")
     sendAim,
     sendShoot,
     sendChat,
-    sendTeleport,
     sendUltimate,
     sendSelectClass,
     sendSelectGunSkin,

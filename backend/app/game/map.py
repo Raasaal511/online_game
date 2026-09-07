@@ -86,3 +86,23 @@ TRAP_POINTS: list[tuple[float, float]] = [
 # Точка супер-power-up — прямо в центральном ядре крепости (самое опасное,
 # но самое ценное место карты; единственная точка спавна для kind="super")
 SUPER_PICKUP_POINT: tuple[float, float] = (FIELD_WIDTH / 2, FIELD_HEIGHT / 2)
+
+# Точки-кандидаты для порталов — рядом с внутренними стенами/укрытиями (не с
+# внешней границей, чтобы портал не зажимал танк у края карты), достаточно
+# далеко друг от друга, чтобы пара портал-точка не создавала телепорт
+# "в шаге" от исходной позиции. Каждый спавн случайно выбирает 2 из этого
+# набора под новую пару.
+PORTAL_POINTS: list[tuple[float, float]] = [
+    (FIELD_WIDTH / 2 - 320, FIELD_HEIGHT / 2 - 90),
+    (FIELD_WIDTH / 2 + 320, FIELD_HEIGHT / 2 - 90),
+    (FIELD_WIDTH / 2 - 320, FIELD_HEIGHT / 2 + 90),
+    (FIELD_WIDTH / 2 + 320, FIELD_HEIGHT / 2 + 90),
+    (360, 165),
+    (FIELD_WIDTH - 360, 165),
+    (360, FIELD_HEIGHT - 165),
+    (FIELD_WIDTH - 360, FIELD_HEIGHT - 165),
+    (FIELD_WIDTH / 2, 150),
+    (FIELD_WIDTH / 2, FIELD_HEIGHT - 150),
+    (150, FIELD_HEIGHT / 2),
+    (FIELD_WIDTH - 150, FIELD_HEIGHT / 2),
+]

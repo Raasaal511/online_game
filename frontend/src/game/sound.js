@@ -248,6 +248,18 @@ export function playTeleportSound() {
   }
 }
 
+export function playPortalSpawnSound() {
+  // низкий "разрыв пространства" — нарастающий и спадающий вой, отличается
+  // от короткого чистого свиста самой телепортации (playTeleportSound)
+  try {
+    playTone({ freq: 90, freqEnd: 340, duration: 0.5, type: "sawtooth", volume: 0.15 });
+    playTone({ freq: 340, freqEnd: 90, duration: 0.5, type: "sine", volume: 0.1 });
+    playNoise({ duration: 0.4, volume: 0.1, filterFreq: 1800 });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 export function playUltimateFireSound() {
   try {
     playTone({ freq: 90, freqEnd: 30, duration: 0.5, type: "sawtooth", volume: 0.3 });

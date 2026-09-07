@@ -32,8 +32,15 @@ async def game_ws(
             }
         )
         while True:
-            data = await websocket.receive_json()
-            msg_type = data.get("type")
+            try:
+                data = await websocket.receive_json()
+            except ValueError:
+                # невалидный JSON от клиента — пропускаем сообщение, а не
+                # роняем соединение (без этого один битый пакет молча
+                # дисконнектил игрока без всякой причины на его стороне)
+                continue
+
+            msg_type = data.get("type") if isinstance(data, dict) else None
 
             # общий rate-limit на любое входящее сообщение — защита от заливки
             # пакетами (не путать с игровыми кулдаунами оружия/чата, которые
@@ -41,29 +48,35 @@ async def game_ws(
             if not game_room.allow_message(player.id):
                 continue
 
-            if msg_type == "input":
-                direction = data.get("dir", {})
-                game_room.set_input(
-                    player.id,
-                    float(direction.get("x", 0)),
-                    float(direction.get("y", 0)),
-                )
-            elif msg_type == "aim":
-                game_room.set_aim(player.id, float(data.get("angle", 0)))
-            elif msg_type == "shoot":
-                game_room.try_shoot(player.id, bool(data.get("use_pickup", False)))
-            elif msg_type == "teleport":
-                game_room.try_teleport(player.id, float(data.get("angle", 0)))
-            elif msg_type == "ultimate":
-                game_room.try_ultimate(player.id)
-            elif msg_type == "select_class":
-                game_room.set_respawn_class(player.id, str(data.get("tank_class", "")))
-            elif msg_type == "select_gun_skin":
-                game_room.set_gun_skin(player.id, str(data.get("gun_skin", "")))
-            elif msg_type == "chat":
-                entry = game_room.add_chat_message(player.id, str(data.get("text", "")))
-                if entry is not None:
-                    await game_room.broadcast_chat(entry)
+            try:
+                if msg_type == "input":
+                    direction = data.get("dir", {})
+                    if not isinstance(direction, dict):
+                        direction = {}
+                    game_room.set_input(
+                        player.id,
+                        float(direction.get("x", 0)),
+                        float(direction.get("y", 0)),
+                    )
+                elif msg_type == "aim":
+                    game_room.set_aim(player.id, float(data.get("angle", 0)))
+                elif msg_type == "shoot":
+                    game_room.try_shoot(player.id, bool(data.get("use_pickup", False)))
+                elif msg_type == "ultimate":
+                    game_room.try_ultimate(player.id)
+                elif msg_type == "select_class":
+                    game_room.set_respawn_class(player.id, str(data.get("tank_class", "")))
+                elif msg_type == "select_gun_skin":
+                    game_room.set_gun_skin(player.id, str(data.get("gun_skin", "")))
+                elif msg_type == "chat":
+                    entry = game_room.add_chat_message(player.id, str(data.get("text", "")))
+                    if entry is not None:
+                        await game_room.broadcast_chat(entry)
+            except (ValueError, TypeError, AttributeError):
+                # некорректные значения полей (не число там, где ожидается
+                # float, и т.п.) — тот же принцип: пропустить сообщение,
+                # не рвать соединение из-за одного бажного/вредоносного пакета
+                continue
 
     except WebSocketDisconnect:
         pass

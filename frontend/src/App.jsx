@@ -10,12 +10,10 @@ import { useKeyboardInput } from "./hooks/useKeyboardInput.js";
 import { colors, panel, fontFamily } from "./ui/theme.js";
 import { TANK_CLASSES } from "./game/tankClasses.js";
 import {
-  IconCrosshair,
   IconSkull,
   IconSword,
   IconStar,
   IconShield,
-  IconBolt,
   IconWind,
   IconSnail,
   IconGun,
@@ -25,7 +23,6 @@ import {
   IconRadiation,
   IconCrown,
   IconFlagCheckered,
-  IconTrophy,
   IconWarning,
   IconBurst,
 } from "./ui/icons.jsx";
@@ -72,7 +69,6 @@ export default function App() {
     sendAim,
     sendShoot,
     sendChat,
-    sendTeleport,
     sendUltimate,
     sendSelectClass,
     clearDeath,
@@ -265,28 +261,6 @@ export default function App() {
                 <IconSnail /> Замедление
               </span>
             )}
-            {me.tank_class === "gunner" && (
-              <span style={styles.statChip}>
-                <IconGun /> {me.reloading ? "перезарядка..." : `${me.ammo}/${me.ammo_max}`}
-              </span>
-            )}
-            <span
-              title="Телепорт — Shift"
-              className={me.teleport_cooldown > 0 ? "" : "anim-chip-pulse"}
-              style={{
-                ...styles.statChip,
-                ...(me.teleport_cooldown > 0 ? null : styles.readyChip),
-              }}
-            >
-              <IconBolt /> {me.teleport_cooldown > 0 ? `${me.teleport_cooldown}с` : "Готово"}
-            </span>
-            <span
-              title="Ульта — Пробел"
-              className={me.ultimate_ready ? "anim-chip-pulse" : ""}
-              style={{ ...styles.statChip, ...(me.ultimate_ready ? styles.readyChip : null) }}
-            >
-              <IconFlame /> {me.ultimate_ready ? "УЛЬТА ГОТОВА (Пробел)" : `${me.ultimate_kills}/5`}
-            </span>
           </div>
         )}
       </div>
@@ -305,7 +279,6 @@ export default function App() {
               playerId={playerId}
               sendAim={sendAim}
               sendShoot={sendShoot}
-              sendTeleport={sendTeleport}
               sendUltimate={sendUltimate}
               onGameEvent={handleGameEvent}
             />
