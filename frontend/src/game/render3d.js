@@ -320,28 +320,6 @@ function drawRamp3D(ctx, wall) {
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  // предупреждающая диагональная жёлто-чёрная штриховка вдоль всей площадки —
-  // однозначно читается как "функциональный объект", а не декоративный кусок стены
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(x, y + height);
-  ctx.lineTo(x + width, y + height);
-  ctx.lineTo(x + width - inset, topY);
-  ctx.lineTo(x + inset, topY);
-  ctx.closePath();
-  ctx.clip();
-  ctx.strokeStyle = "rgba(15, 23, 42, 0.75)";
-  ctx.lineWidth = 6;
-  const stripeStep = 14;
-  const span = width + height;
-  for (let i = -span; i < span; i += stripeStep) {
-    ctx.beginPath();
-    ctx.moveTo(x + i, y + height + 10);
-    ctx.lineTo(x + i + height + 10, topY - 10);
-    ctx.stroke();
-  }
-  ctx.restore();
-
   // стрелка въезда по центру площадки — направление, куда танк заезжает наверх
   ctx.save();
   ctx.translate(x + width / 2, (y + height + topY) / 2);
@@ -484,39 +462,48 @@ export function drawPickup3D(ctx, pickup, colors, t) {
   ctx.save();
   ctx.translate(pickup.x, py);
 
-  // капсула вращается вокруг вертикальной оси — сплющивается в эллипс на
-  // пол-оборота, имитируя 3D-вращение на плоском canvas (как классические
-  // аркадные "монетки"), а не статично висящий плоский кружок
+  // настоящая вращающаяся сфера, а не сплющивающийся в линию эллипс — раньше
+  // на пол-оборота (squash≈0) капсула схлопывалась в почти невидимую полоску
+  // и иконка целиком пропадала на половину цикла, что читалось как баг
+  // ("плоский шар, иконка пропадает"), а не как убедительное вращение.
+  // Радиус тела всегда полный; вращение показано смещением блика/терминатора
+  // света по поверхности (как у реальной вращающейся сферы), не искажением формы.
   const spin = t * 2.2 + pickup.x * 0.01;
-  const squash = Math.cos(spin);
-  const radius = isSuper ? 12 : 10;
+  const radius = isSuper ? 15 : 13;
+  const highlightX = Math.cos(spin) * radius * 0.5;
+  const highlightY = Math.sin(spin * 0.7) * radius * 0.35 - radius * 0.3;
 
-  // рант капсулы (боковая грань) — виден только когда squash близко к 0
-  // (капсула повёрнута почти ребром), делает вращение физически убедительным
-  if (Math.abs(squash) < 0.35) {
-    ctx.fillStyle = shadeColor(color, -0.4);
-    ctx.beginPath();
-    ctx.ellipse(0, 0, radius * 0.18, radius, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  const grad = ctx.createRadialGradient(-2, -3, 1, 0, 0, radius);
+  const grad = ctx.createRadialGradient(highlightX, highlightY, 1, 0, 0, radius);
   grad.addColorStop(0, "#ffffff");
-  grad.addColorStop(0.35, color);
-  grad.addColorStop(1, shadeColor(color, -0.25));
+  grad.addColorStop(0.3, color);
+  grad.addColorStop(0.75, shadeColor(color, -0.2));
+  grad.addColorStop(1, shadeColor(color, -0.5));
   ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.ellipse(0, 0, Math.max(2, radius * Math.abs(squash)), radius, 0, 0, Math.PI * 2);
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
   ctx.fill();
   ctx.strokeStyle = "rgba(255,255,255,0.5)";
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // иконка видна только на "лицевой" половине оборота — не искажаем её
-  // вместе со сплющиванием эллипса, просто скрываем/показываем целиком
-  if (squash > 0) {
-    drawIcon(ctx, pickup.kind, "#0f172a", 0.85);
-  }
+  // терминатор (граница света/тени) скользит по сфере вслед за вращением —
+  // тонкий тёмный полумесяц с той стороны, что сейчас "отвёрнута" от блика
+  const termAngle = spin + Math.PI;
+  ctx.save();
+  ctx.clip(new Path2D(`M ${-radius} 0 A ${radius} ${radius} 0 1 1 ${radius} 0.001 Z`));
+  ctx.fillStyle = "rgba(0,0,0,0.28)";
+  ctx.beginPath();
+  ctx.ellipse(Math.cos(termAngle) * radius * 0.6, 0, radius * 0.55, radius, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // иконка всегда видна (не пропадает) — чуть "плавает" по поверхности вслед
+  // за вращением, создавая ощущение объекта на 3D-сфере, а не наклейки
+  ctx.save();
+  ctx.translate(Math.sin(spin) * radius * 0.12, 0);
+  drawIcon(ctx, pickup.kind, "#0f172a", radius / 12);
+  ctx.restore();
+
   ctx.restore();
 }
 
@@ -568,7 +555,7 @@ const BULLET_PALETTE = {
 // снаряды с явно вытянутой "пулевидной" формой (не круг) — заострённый нос
 // по направлению полёта, скруглённый хвост; пулемётные трассеры остаются
 // мелкими точками намеренно (высокая скорострельность, форма не читается)
-const SHELL_KINDS = new Set(["cannon", "sniper", "brawler", "ultimate"]);
+const SHELL_KINDS = new Set(["cannon", "sniper", "brawler", "ultimate", "rocket"]);
 
 // Предрендеренные спрайты glow-свечения пули: ctx.createRadialGradient() +
 // 2x addColorStop() на КАЖДУЮ пулю КАЖДЫЙ кадр — при скорострельном оружии
@@ -627,6 +614,8 @@ export function drawBullet3D(ctx, bullet, t = 0) {
     ? Math.max(bullet.size, 5)
     : isUltimate
     ? Math.max(bullet.size, 16)
+    : isRocket
+    ? Math.max(bullet.size, 13)
     : isCannon
     ? Math.max(bullet.size, 11)
     : Math.max(bullet.size, 8);
@@ -868,7 +857,7 @@ export function drawTeleportEffect3D(ctx, effect, age) {
 }
 
 // синхронизировано с PORTAL_SIZE на сервере
-const PORTAL_RADIUS = 15.0;
+const PORTAL_RADIUS = 22.0;
 
 // Портал — стоячий вертикальный овал с вращающейся спиралью внутри и
 // неоновой зелёно-жёлтой рамкой (характерный "Рик и Морти" стиль), а не
@@ -1002,6 +991,42 @@ export function drawNukeWarning3D(ctx, nuke, t) {
   ctx.stroke();
   ctx.setLineDash([]);
 
+  // третье, вращающееся кольцо-периметр — сканирующий "лазерный" контур,
+  // ускоряется по мере приближения детонации, усиливает ощущение отсчёта
+  const spinAngle = t * (2 + nuke.warning_progress * 6);
+  ctx.strokeStyle = `rgba(248, 113, 113, ${0.6 + pulse * 0.3})`;
+  ctx.lineWidth = 2.5;
+  for (let i = 0; i < 4; i++) {
+    const a0 = spinAngle + (i / 4) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(nuke.x, nuke.y, radius * 0.82, a0, a0 + 0.4);
+    ctx.stroke();
+  }
+
+  // электрические разряды-трещины от центра к краю зоны — учащаются и
+  // становятся ярче ближе к детонации, как нарастающее энергетическое давление
+  const boltCount = 3 + Math.floor(nuke.warning_progress * 5);
+  ctx.strokeStyle = `rgba(254, 240, 138, ${0.5 + fastPulse * 0.4})`;
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < boltCount; i++) {
+    const seed = i * 37.13 + Math.floor(t * (4 + nuke.warning_progress * 10));
+    const a = (Math.sin(seed) * 0.5 + 0.5) * Math.PI * 2;
+    const boltLen = radius * (0.4 + 0.5 * (Math.sin(seed * 1.7) * 0.5 + 0.5));
+    ctx.beginPath();
+    ctx.moveTo(nuke.x, nuke.y);
+    let px = nuke.x;
+    let py = nuke.y;
+    const segments = 4;
+    for (let s = 1; s <= segments; s++) {
+      const frac = s / segments;
+      const jitter = (Math.sin(seed * 3 + s * 5) * 0.5) * radius * 0.05;
+      px = nuke.x + Math.cos(a) * boltLen * frac + Math.cos(a + Math.PI / 2) * jitter;
+      py = nuke.y + Math.sin(a) * boltLen * frac * 0.55 + Math.sin(a + Math.PI / 2) * jitter * 0.55;
+      ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+
   // мигающий символ радиации в центре — учащается по мере приближения взрыва
   const blinkSpeed = 3 + nuke.warning_progress * 14;
   const blink = Math.sin(t * blinkSpeed) > 0;
@@ -1054,11 +1079,22 @@ export function drawNukeExplosion3D(ctx, explosion, age) {
   // взрыв ядерки — отдельный от обычного drawExplosion3D эффект "гриба":
   // расширяющаяся ударная волна по земле + поднимающееся облако-шапка со
   // смещением вверх (через screenY), заметно масштабнее и дольше живёт,
-  // чем взрыв ракеты/бомбы — раньше рисовался тем же кругом, что и обычная
-  // граната, и не читался как нечто катастрофическое
+  // чем взрыв ракеты/бомбы. Дополнено: начальная белая вспышка детонации,
+  // огненное кольцо у основания столба, вторичные обломки/куски земли по
+  // орбите ударной волны — читается заметно катастрофичнее и опаснее.
   if (age >= 1) return;
   const alpha = 1 - age;
   const groundRadius = explosion.radius * (0.35 + age * 0.85);
+
+  // ослепляющая вспышка детонации — доля секунды в самом начале, ярче и
+  // шире всего остального; единственный момент, где взрыв реально "бьёт по глазам"
+  if (age < 0.12) {
+    const flashAlpha = 1 - age / 0.12;
+    ctx.fillStyle = `rgba(255, 255, 255, ${0.9 * flashAlpha})`;
+    ctx.beginPath();
+    ctx.arc(explosion.x, explosion.y, groundRadius * 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // ударная волна по земле — тёмно-серая пыльная, не огненная (реалистичнее для "ядерки")
   const groundGrad = ctx.createRadialGradient(explosion.x, explosion.y, 0, explosion.x, explosion.y, groundRadius);
@@ -1077,6 +1113,32 @@ export function drawNukeExplosion3D(ctx, explosion, age) {
   ctx.arc(explosion.x, explosion.y, groundRadius, 0, Math.PI * 2);
   ctx.stroke();
 
+  // второе, более тонкое кольцо чуть позади фронта волны — читается как
+  // вторичная ударная волна/остаточное давление, добавляет ощущение массы взрыва
+  if (age > 0.1) {
+    const echoRadius = groundRadius * 0.7;
+    ctx.strokeStyle = `rgba(255, 200, 120, ${0.35 * alpha})`;
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(explosion.x, explosion.y, echoRadius, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // обломки/куски вырванной земли, разлетающиеся по орбите ударной волны —
+  // мелкие тёмные силуэты на переменном расстоянии, вращаются вокруг эпицентра
+  const debrisCount = 14;
+  for (let i = 0; i < debrisCount; i++) {
+    const a = (i / debrisCount) * Math.PI * 2 + i * 0.7;
+    const dist = groundRadius * (0.55 + 0.4 * ((i % 3) / 2));
+    const dx = explosion.x + Math.cos(a) * dist;
+    const dy = explosion.y + Math.sin(a) * dist * 0.55;
+    const size = 3 + (i % 4);
+    ctx.fillStyle = `rgba(41, 37, 36, ${0.6 * alpha})`;
+    ctx.beginPath();
+    ctx.arc(dx, dy, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   // столб/ножка гриба — поднимается быстрее, чем расширяется шапка
   const stemHeight = 40 + age * 140;
   const stemWidth = explosion.radius * (0.12 + age * 0.05);
@@ -1088,6 +1150,21 @@ export function drawNukeExplosion3D(ctx, explosion, age) {
   ctx.beginPath();
   ctx.ellipse(explosion.x, (explosion.y + stemTopY) / 2, stemWidth, Math.abs(explosion.y - stemTopY) / 2, 0, 0, Math.PI * 2);
   ctx.fill();
+
+  // огненное кольцо у основания столба — раскалённое ядро взрыва, ещё не
+  // остывшее в клубящуюся пыль (в отличие от серой шапки/ножки выше)
+  if (age < 0.55) {
+    const fireAlpha = (1 - age / 0.55) * alpha;
+    const fireR = explosion.radius * (0.22 + age * 0.3);
+    const fireGrad = ctx.createRadialGradient(explosion.x, explosion.y, 0, explosion.x, explosion.y, fireR);
+    fireGrad.addColorStop(0, `rgba(255, 214, 140, ${0.8 * fireAlpha})`);
+    fireGrad.addColorStop(0.5, `rgba(234, 88, 12, ${0.55 * fireAlpha})`);
+    fireGrad.addColorStop(1, "rgba(234, 88, 12, 0)");
+    ctx.fillStyle = fireGrad;
+    ctx.beginPath();
+    ctx.arc(explosion.x, explosion.y, fireR, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // шапка гриба — округлое облако над столбом, растёт с задержкой и медленнее ножки
   const capProgress = Math.max(0, age - 0.15) / 0.85;
@@ -1101,6 +1178,22 @@ export function drawNukeExplosion3D(ctx, explosion, age) {
   ctx.beginPath();
   ctx.ellipse(explosion.x, capY, capRadius, capRadius * 0.75, 0, 0, Math.PI * 2);
   ctx.fill();
+
+  // клубящиеся выступы по краю шапки — несколько дополнительных облачных
+  // "бугров" вдоль контура, разбивают идеально гладкий эллипс на более
+  // органичную, турбулентную форму настоящего грибовидного облака
+  const lobeCount = 6;
+  for (let i = 0; i < lobeCount; i++) {
+    const a = (i / lobeCount) * Math.PI * 2;
+    const lobeDist = capRadius * 0.85;
+    const lx = explosion.x + Math.cos(a) * lobeDist;
+    const ly = capY + Math.sin(a) * lobeDist * 0.7;
+    const lobeR = capRadius * (0.22 + 0.08 * (i % 2));
+    ctx.fillStyle = `rgba(140, 133, 128, ${0.4 * alpha})`;
+    ctx.beginPath();
+    ctx.arc(lx, ly, lobeR, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 export function drawWallBreakEffect3D(ctx, effect, age) {
@@ -1139,6 +1232,32 @@ export function drawWallHitSpark3D(ctx, hit, age) {
   ctx.beginPath();
   ctx.arc(hit.x, hit.y, 6 + age * 10, 0, Math.PI * 2);
   ctx.fill();
+}
+
+// Длина ствола до дульного среза по классу танка — ДОЛЖНА совпадать с
+// barrelLen, используемым внутри drawTank3D для каждой ветки (снайпер длинный,
+// brawler короче, gunner барабан, мини-босс спаренный) — иначе позиция
+// вспышки выстрела в GameCanvas.jsx (которая считается отдельно, до вызова
+// drawTank3D) не совпадает с реальным концом нарисованного ствола.
+// Реальный отрисованный размер танка (с учётом уровня/супербаффа/мини-босса) —
+// вынесено в отдельную чистую функцию, переиспользуемую и в drawTank3D, и в
+// GameCanvas.jsx для позиционирования вспышки выстрела. Раньше вспышка
+// считалась от фиксированной константы TANK_SIZE, а корпус мог быть заметно
+// крупнее (прокачанный уровень, супер-бафф) — вспышка оставалась у "старого"
+// маленького радиуса и визуально отставала от реального конца ствола.
+export function computeTankSize(baseTankSize, level, isMiniboss, hasSuper, superPulsePhase = 0) {
+  const levelProgress = isMiniboss ? 0 : (level - 1) / 4;
+  const superPulse = hasSuper ? 1 + 0.06 * Math.sin(superPulsePhase) : 1;
+  const superGrow = hasSuper ? 1.35 * superPulse : 1;
+  return isMiniboss ? baseTankSize * 3 : baseTankSize * (1 + levelProgress * 0.22) * superGrow;
+}
+
+export function getMuzzleBarrelLength(tankSize, tankClass, isMiniboss) {
+  if (isMiniboss) return tankSize / 2 + 10;
+  if (tankClass === "sniper") return tankSize / 2 + 20;
+  if (tankClass === "brawler") return tankSize / 2 + 4;
+  if (tankClass === "gunner") return tankSize / 2 + 6;
+  return tankSize / 2 + 8; // cannon по умолчанию
 }
 
 // Один сегмент ствола: объёмный цилиндр вместо плоского fillRect — тёмная
@@ -1207,17 +1326,11 @@ export function drawTank3D(
   } = player;
   const level = player.level ?? 1;
   // чем выше уровень — тем крупнее и золотистее танк (визуальный статус
-  // прокачки, помимо цифры в бейдже): растёт плавно, не рывками
+  // прокачки, помимо цифры в бейдже), а супер-бафф ещё и раздувает сам
+  // корпус — см. computeTankSize (расчёт вынесен в отдельную функцию,
+  // переиспользуемую в GameCanvas.jsx для позиционирования вспышки выстрела)
   const levelProgress = isMiniboss ? 0 : (level - 1) / 4; // 0..1 (LEVEL_MAX=5)
-  // супер-бафф раздувает сам корпус (не просто добавляет свечение вокруг
-  // неизменного квадрата) — заметная пульсация размера, читается как "танк
-  // стал мощнее", а не как отдельный декоративный ореол вокруг него
-  const superPulse = hasSuper ? 1 + 0.06 * Math.sin((t ?? 0) * 8) : 1;
-  const superGrow = hasSuper ? 1.35 * superPulse : 1;
-  // мини-босс втрое крупнее обычного танка — синхронизировано с MINIBOSS_SIZE
-  // на сервере (96 vs 32), должен читаться как настоящий босс, а не чуть
-  // подросший игрок
-  const tankSize = isMiniboss ? baseTankSize * 3 : baseTankSize * (1 + levelProgress * 0.22) * superGrow;
+  const tankSize = computeTankSize(baseTankSize, level, isMiniboss, hasSuper, t ?? 0);
   const bodyZ = isMiniboss ? 22 : 10; // мини-босс визуально заметно выше обычных танков
   const half = tankSize / 2;
 

@@ -101,8 +101,8 @@ PORTAL_POINTS: list[tuple[float, float]] = [
     (FIELD_WIDTH - 360, 165),
     (360, FIELD_HEIGHT - 165),
     (FIELD_WIDTH - 360, FIELD_HEIGHT - 165),
-    (FIELD_WIDTH / 2, 150),
-    (FIELD_WIDTH / 2, FIELD_HEIGHT - 150),
+    (FIELD_WIDTH / 2 - 90, 150),
+    (FIELD_WIDTH / 2 - 90, FIELD_HEIGHT - 150),
     (150, FIELD_HEIGHT / 2),
     (FIELD_WIDTH - 150, FIELD_HEIGHT / 2),
 ]

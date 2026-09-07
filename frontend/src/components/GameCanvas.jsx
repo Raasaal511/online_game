@@ -25,6 +25,9 @@ import {
   drawWallBreakEffect3D,
   drawWallHitSpark3D,
   drawParticles3D,
+  computeTankSize,
+  getMuzzleBarrelLength,
+  screenY,
 } from "../game/render3d.js";
 import {
   playShotSound,
@@ -693,7 +696,15 @@ export default function GameCanvas({
           const speedAlpha = Math.min(1, dt * 8); // ~125мс до устаканивания
           const prevEmaSpeed = motion.emaSpeed;
           motion.emaSpeed += (rawSpeed - motion.emaSpeed) * speedAlpha;
-          if (rawSpeed > 20) {
+          // порог был 20 px/sec — танк разгоняется инерционно (TANK_ACCEL на
+          // сервере), поэтому первые несколько тиков после старта rawSpeed
+          // проходит диапазон 1..20 НИЖЕ порога: motion.dirX/dirY всё это
+          // время не обновлялись вообще (условие ниже не выполнялось), а
+          // затем при пересечении 20 направление СКАЧКОМ вставало на место —
+          // ровно это и читалось как "дёргается в начале движения". Порог
+          // снижен почти до нуля (1 px/sec — уже не шум, реальное начало
+          // движения), скачка направления больше нет с первого же тика.
+          if (rawSpeed > 1) {
             const targetDirX = obj.data.vx / rawSpeed;
             const targetDirY = obj.data.vy / rawSpeed;
             if (!motion.wasMoving) {
@@ -746,8 +757,24 @@ export default function GameCanvas({
 
           drawTank3D(ctx, obj.data, obj.data.id === playerId, TANK_SIZE, timestamp / 1000, kickback, accelBoost, moveAngle);
           if (kickback > 0.5) {
-            const flashX = obj.data.x + Math.cos(obj.data.turret_angle) * (TANK_SIZE / 2 + 8);
-            const flashY = obj.data.y + Math.sin(obj.data.turret_angle) * (TANK_SIZE / 2 + 8);
+            // позиция вспышки должна точно совпадать с реальным концом
+            // ствола, нарисованным внутри drawTank3D — раньше считалась от
+            // фиксированной константы TANK_SIZE без учёта класса танка
+            // (снайпер/brawler/gunner рисуют стволы разной длины) и без
+            // учёта роста корпуса от уровня/супер-баффа, из-за чего вспышка
+            // "отставала" от дульного среза почти у всех, кроме базовой пушки
+            const baseSize = obj.data.is_miniboss ? MINIBOSS_TANK_SIZE : TANK_SIZE;
+            const tankSize = computeTankSize(
+              baseSize,
+              obj.data.level ?? 1,
+              obj.data.is_miniboss,
+              obj.data.has_super,
+              timestamp / 1000
+            );
+            const barrelLen = getMuzzleBarrelLength(tankSize, obj.data.tank_class, obj.data.is_miniboss);
+            const turretZ = (obj.data.is_miniboss ? 22 : 10) + 8;
+            const flashX = obj.data.x + Math.cos(obj.data.turret_angle) * barrelLen;
+            const flashY = screenY(obj.data.y, turretZ) + Math.sin(obj.data.turret_angle) * barrelLen;
             drawMuzzleFlash3D(ctx, flashX, flashY, obj.data.turret_angle, kickback);
           }
           if (obj.data.laser_charging) {
