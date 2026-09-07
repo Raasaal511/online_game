@@ -17,6 +17,7 @@ import {
   drawCastShadow,
   drawExplosion3D,
   drawNukeExplosion3D,
+  drawGroundDust3D,
   drawLaserCharge3D,
   drawLaserShot3D,
   drawTeleportEffect3D,
@@ -574,6 +575,11 @@ export default function GameCanvas({
 
       // следы гусениц лежат прямо на полу, ниже всех объектов painter's algorithm
       tracks.draw(ctx);
+
+      // пыль из-под гусениц — тоже на уровне пола, ДО отрисовки танков, иначе
+      // клубы пыли перекрывали бы танк сверху (раньше шли через общий поток
+      // частиц, рисуемый в конце кадра поверх всей сцены)
+      drawGroundDust3D(ctx, particles.getParticles());
 
       // ловушки тоже плоские декали на полу — рисуются перед сортировкой
       // по глубине, чтобы танки/пули всегда перекрывали их визуально

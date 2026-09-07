@@ -1673,25 +1673,40 @@ function getDustSprite() {
   return _dustSprite;
 }
 
-export function drawParticles3D(ctx, particles) {
+// Пыль из-под гусениц рисуется ОТДЕЛЬНО от остальных частиц (взрывы, искры,
+// дым от выстрелов) и на уровне пола — раньше вся пыль шла через общий
+// drawParticles3D, вызываемый в самом конце кадра ПОВЕРХ уже нарисованных
+// танков по painter's algorithm, из-за чего клубы пыли всегда перекрывали
+// танк сверху, даже когда танк должен быть "перед" пылью по глубине сцены.
+// Вызывать эту функцию нужно сразу после пола/следов гусениц, ДО сортировки
+// и отрисовки основной сцены (стены/танки/пули).
+export function drawGroundDust3D(ctx, particles) {
   for (const p of particles) {
+    if (p.kind !== "dust") continue;
     const t = 1 - p.age / p.life;
     if (t <= 0) continue;
 
-    if (p.kind === "dust") {
-      // клуб пыли: растёт в размере и теряет чёткость по мере рассеивания —
-      // закэшированный спрайт (getDustSprite) вместо пересоздания gradient
-      // на каждую частицу каждый кадр, читается как оседающее облако
-      const grow = 1 + (1 - t) * 1.8;
-      const r = p.size * grow;
-      const py = screenY(p.y, p.z);
-      const alpha = t * 0.4;
-      const prevAlpha = ctx.globalAlpha;
-      ctx.globalAlpha = alpha;
-      ctx.drawImage(getDustSprite(), p.x - r, py - r, r * 2, r * 2);
-      ctx.globalAlpha = prevAlpha;
-      continue;
-    }
+    // клуб пыли: растёт в размере и теряет чёткость по мере рассеивания —
+    // закэшированный спрайт (getDustSprite) вместо пересоздания gradient
+    // на каждую частицу каждый кадр, читается как оседающее облако
+    const grow = 1 + (1 - t) * 1.8;
+    const r = p.size * grow;
+    // на уровне пола (без screenY по высоте z) — пыль стелется по земле,
+    // а не парит в воздухе, поэтому её глубина в сцене всегда "под танком"
+    const alpha = t * 0.4;
+    const prevAlpha = ctx.globalAlpha;
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(getDustSprite(), p.x - r, p.y - r, r * 2, r * 2);
+    ctx.globalAlpha = prevAlpha;
+  }
+  ctx.globalAlpha = 1;
+}
+
+export function drawParticles3D(ctx, particles) {
+  for (const p of particles) {
+    if (p.kind === "dust") continue; // пыль рисуется отдельно, см. drawGroundDust3D
+    const t = 1 - p.age / p.life;
+    if (t <= 0) continue;
 
     // тень на полу, слабеет по мере подъёма частицы
     const shadowAlpha = Math.max(0, t * 0.3 * (1 - p.z / 120));
