@@ -47,9 +47,9 @@ export default function TankPreview({ tankClass, gunSkin }) {
       ctx.arc(cx, cy, TANK_SIZE * 1.8, 0, Math.PI * 2);
       ctx.fill();
 
-      // медленное покачивание прицела башни — наглядно показывает ствол со
-      // всех сторон, не статичная поза
-      const angle = Math.sin(t * 0.6) * 0.55;
+      // ствол смотрит строго вправо, без покачивания — раньше угол
+      // анимировался синусоидой и танк выглядел "перекошенным"/неровным
+      const angle = 0;
 
       const fakePlayer = {
         id: "preview",

@@ -865,7 +865,10 @@ const PORTAL_RADIUS = 22.0;
 export function drawPortal3D(ctx, portal, t) {
   const z = 0;
   const py = screenY(portal.y, z);
-  const pulse = 0.7 + 0.3 * Math.sin(t * 3 + portal.x * 0.02);
+  // амплитуда пульсации была слишком заметной (±30% размера, портал явно
+  // "сжимался/разжимался") — уменьшена до лёгкого дыхания, не мешающего
+  // оценить реальный размер зоны срабатывания на глаз
+  const pulse = 0.92 + 0.08 * Math.sin(t * 3 + portal.x * 0.02);
   const rx = PORTAL_RADIUS * pulse;
   const ry = PORTAL_RADIUS * 1.4 * pulse; // вытянут по вертикали — стоячий проём, не лужа на полу
 
