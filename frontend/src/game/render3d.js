@@ -118,6 +118,17 @@ const WEAPON_BADGE_COLORS = {
   minigun: "#94a3b8",
   flamethrower: "#d9772f",
   rocket: "#c24228",
+  ice: "#7dd3fc",
+};
+
+// временный цветовой рескин ствола, пока действует подобранное с карты
+// оружие — той же формы {turret, turretDark, barrel, barrelDark}, что и
+// GUN_SKIN_COLORS, но независимый набор: подчёркнуто "неродной" вид
+// (обугленный/промёрзший/тёмный металл ракетницы), не спутать с косметикой меню
+const PICKUP_BARREL_SKINS = {
+  flamethrower: { turret: "#451a03", turretDark: "#1c0701", barrel: "#292524", barrelDark: "#0c0a09" },
+  ice: { turret: "#0c4a6e", turretDark: "#082f49", barrel: "#7dd3fc", barrelDark: "#0369a1" },
+  rocket: { turret: "#1c1917", turretDark: "#000000", barrel: "#292524", barrelDark: "#000000" },
 };
 
 // экранная высота объекта с данной игровой высотой z (0 = на полу)
@@ -166,6 +177,62 @@ export function drawFloor(ctx, width, height) {
   vignette.addColorStop(1, "rgba(0,0,0,0.48)");
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, width, height);
+}
+
+// Яма вокруг супер-пикапа — "пропавший" участок пола, а не декаль поверх
+// него: тёмная почти чёрная заливка с мягким затухающим краем (не резкая
+// граница) читается как настоящий провал/бездна, плюс редкие блики "искр"
+// на дне для ощущения глубины. Рисуется сразу после drawFloor, ДО стен и
+// танков — это часть уровня земли, не эффект поверх сцены.
+// зоны ямы статичны (геометрия карты, не меняется в рантайме) — градиент
+// края кэшируется по ключу геометрии, а не пересоздаётся каждый кадр на
+// каждую из 8 зон (то же соображение, что у _glowSpriteCache для пуль)
+const _pitGradientCache = new Map(); // key: `${x},${y},${w},${h}` -> CanvasGradient
+
+function getPitEdgeGradient(ctx, x, y, width, height) {
+  const key = `${x},${y},${width},${height}`;
+  let grad = _pitGradientCache.get(key);
+  if (grad) return grad;
+
+  const cx = x + width / 2;
+  const cy = y + height / 2;
+  grad = ctx.createRadialGradient(
+    cx,
+    cy,
+    Math.min(width, height) * 0.25,
+    cx,
+    cy,
+    Math.max(width, height) * 0.75
+  );
+  grad.addColorStop(0, "rgba(5, 5, 5, 0)");
+  grad.addColorStop(1, "rgba(5, 5, 5, 0.55)");
+  _pitGradientCache.set(key, grad);
+  return grad;
+}
+
+export function drawPitZone3D(ctx, zone, t) {
+  const { x, y, width, height } = zone;
+
+  ctx.fillStyle = "#050505";
+  ctx.fillRect(x, y, width, height);
+
+  // затухающий край — яма "проваливается" плавно, а не обрывается по
+  // прямоугольнику точной геометрии зоны
+  ctx.fillStyle = getPitEdgeGradient(ctx, x, y, width, height);
+  ctx.fillRect(x - 20, y - 20, width + 40, height + 40);
+
+  // редкие тусклые огоньки на дне — намёк на глубину, не яркие (это пустота,
+  // не источник света) — детерминированные позиции по seed, без Math.random()
+  const sparkCount = Math.max(2, Math.round((width * height) / 9000));
+  for (let i = 0; i < sparkCount; i++) {
+    const sx = x + _rubbleRand(i * 3.7 + x * 0.01) * width;
+    const sy = y + _rubbleRand(i * 5.3 + y * 0.01) * height;
+    const flicker = 0.3 + 0.3 * Math.sin(t * 2 + i * 3.1);
+    ctx.fillStyle = `rgba(56, 60, 68, ${flicker})`;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 export function drawWall3D(ctx, wall) {
@@ -433,14 +500,20 @@ function drawWallRuins3D(ctx, wall) {
 }
 
 export function drawPickup3D(ctx, pickup, colors, t) {
-  const bob = Math.sin(t * 3 + pickup.x * 0.05) * 4;
-  const z = 14 + bob;
+  // левитация: выше амплитуда и более плавная (медленнее) волна читаются
+  // как настоящее парение объекта в воздухе, а не мелкое дрожание на месте
+  const bobPhase = t * 1.8 + pickup.x * 0.05;
+  const bob = Math.sin(bobPhase) * 8;
+  const z = 18 + bob;
   const shadowScale = 1 - z / 60;
   const isSuper = pickup.kind === "super";
   const color = colors[pickup.kind] || "#fff";
 
-  // тень на полу
-  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  // тень на полу дышит в противофазе высоте — чем выше объект, тем меньше
+  // и бледнее тень, тем сильнее ощущение реального отрыва от земли
+  const shadowLift = 0.5 + 0.5 * Math.sin(bobPhase);
+  const shadowAlpha = 0.4 - shadowLift * 0.18;
+  ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
   ctx.beginPath();
   ctx.ellipse(pickup.x, pickup.y, 9 * shadowScale, 4 * shadowScale, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -461,6 +534,11 @@ export function drawPickup3D(ctx, pickup, colors, t) {
 
   ctx.save();
   ctx.translate(pickup.x, py);
+
+  // лёгкое покачивание из стороны в сторону в такт вертикальной волне —
+  // парящий объект не просто едет по прямой вверх-вниз, а слегка "плывёт"
+  const swayAngle = Math.sin(bobPhase * 0.5) * 0.12;
+  ctx.rotate(swayAngle);
 
   // настоящая вращающаяся сфера, а не сплющивающийся в линию эллипс — раньше
   // на пол-оборота (squash≈0) капсула схлопывалась в почти невидимую полоску
@@ -485,6 +563,40 @@ export function drawPickup3D(ctx, pickup, colors, t) {
   ctx.strokeStyle = "rgba(255,255,255,0.5)";
   ctx.lineWidth = 1;
   ctx.stroke();
+
+  // "как драгон болл": несколько мелких звёзд внутри стеклянной сферы (не
+  // только центральная иконка) — рисуются ДО терминатора, чтобы тень
+  // затемняла и их тоже (звёзды по-настоящему "внутри" стекла, а не
+  // наклеены поверх). Разные размер/глубина/скорость дрейфа на звезду —
+  // читается как объёмный рой, а не плоский узор.
+  if (isSuper) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, 0, radius, 0, Math.PI * 2);
+    ctx.clip();
+    // 7 звёзд — как на классическом шаре: одна крупная центральная + шесть
+    // помельче вокруг, отсылка к "Dragon Ball", которую попросил пользователь
+    const starSeeds = [
+      { a: 0.6, d: 0.55, sp: 0.7, sc: 0.34 },
+      { a: 2.4, d: 0.4, sp: -0.5, sc: 0.26 },
+      { a: 4.1, d: 0.62, sp: 0.9, sc: 0.3 },
+      { a: 5.3, d: 0.35, sp: -0.8, sc: 0.22 },
+      { a: 1.5, d: 0.2, sp: 0.55, sc: 0.4 },
+      { a: 3.3, d: 0.48, sp: -0.35, sc: 0.24 },
+      { a: 5.9, d: 0.58, sp: 0.65, sc: 0.28 },
+    ];
+    for (const s of starSeeds) {
+      const drift = spin * s.sp + s.a;
+      const sx = Math.cos(drift) * radius * s.d;
+      const sy = Math.sin(drift * 1.3) * radius * s.d * 0.7;
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.globalAlpha = 0.75;
+      drawIcon(ctx, "super", "#fff7ed", radius / 12 * s.sc * 4);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
 
   // терминатор (граница света/тени) скользит по сфере вслед за вращением —
   // тонкий тёмный полумесяц с той стороны, что сейчас "отвёрнута" от блика
@@ -546,16 +658,19 @@ export function drawTrap3D(ctx, trap, t) {
 const BULLET_PALETTE = {
   cannon: { glow: "217, 140, 60", core: ["#ffe9c2", "#d98c3c", "#7a3d12"], stroke: "#3d1f0a" },
   minigun: { glow: "203, 213, 225", core: ["#f8fafc", "#94a3b8", "#475569"], stroke: "#1e293b" },
-  rocket: { glow: "194, 65, 40", core: ["#f3b988", "#c24228", "#5c1a10"], stroke: "#2a0d08" },
+  // ракета теперь тёмная/чёрная (не медно-красная) — сам корпус снаряда
+  // читается как боеприпас, а огонь/цвет несёт отдельный хвост-выхлоп ниже
+  rocket: { glow: "234, 88, 12", core: ["#57534e", "#292524", "#0c0a09"], stroke: "#000000" },
   sniper: { glow: "165, 243, 252", core: ["#ecfeff", "#67e8f9", "#155e75"], stroke: "#0e2a35" },
   brawler: { glow: "252, 165, 89", core: ["#fff1e0", "#f59e42", "#7c3a0a"], stroke: "#3d1f0a" },
   ultimate: { glow: "232, 121, 249", core: ["#fdf4ff", "#c026d3", "#4a044e"], stroke: "#2a0930" },
+  ice: { glow: "125, 211, 252", core: ["#f0f9ff", "#7dd3fc", "#0369a1"], stroke: "#0c4a6e" },
 };
 
 // снаряды с явно вытянутой "пулевидной" формой (не круг) — заострённый нос
 // по направлению полёта, скруглённый хвост; пулемётные трассеры остаются
 // мелкими точками намеренно (высокая скорострельность, форма не читается)
-const SHELL_KINDS = new Set(["cannon", "sniper", "brawler", "ultimate", "rocket"]);
+const SHELL_KINDS = new Set(["cannon", "sniper", "brawler", "ultimate", "rocket", "ice"]);
 
 // Предрендеренные спрайты glow-свечения пули: ctx.createRadialGradient() +
 // 2x addColorStop() на КАЖДУЮ пулю КАЖДЫЙ кадр — при скорострельном оружии
@@ -623,8 +738,10 @@ export function drawBullet3D(ctx, bullet, t = 0) {
   const angle = Math.atan2(bullet.vy ?? 0, bullet.vx ?? 1);
 
   // хвостовой мазок скорости вдоль направления полёта — читается как "летит
-  // быстро и опасно", особенно заметно у утяжелённого пушечного снаряда
-  if (isShell || isRocket) {
+  // быстро и опасно", особенно заметно у утяжелённого пушечного снаряда.
+  // Ракета красится собственным огненным выхлопом ниже, этот общий streak
+  // ей не нужен (глушил бы более выразительный эффект своим более тусклым мазком).
+  if (isShell && !isRocket) {
     const trailLen = isUltimate ? r * 2.6 : isCannon ? r * 3.2 : r * 2.4;
     const tailX = bullet.x - Math.cos(angle) * trailLen;
     const tailY = bullet.y - Math.sin(angle) * trailLen;
@@ -640,14 +757,63 @@ export function drawBullet3D(ctx, bullet, t = 0) {
     ctx.stroke();
   }
 
-  // дымный след ракеты — рисуется первым, чтобы оказаться под самим снарядом
+  // огненный хвост-выхлоп ракеты — пользователь явно просил "чёрную ракету,
+  // выпускающую огонь": несколько пульсирующих "клубов" пламени вдоль
+  // хвоста (не один плоский мазок), яркое ядро выхлопа у сопла + дымная
+  // осадка дальше по треку. Рисуется ДО самого корпуса, чтобы корпус лежал
+  // поверх собственного пламени (визуально "вылетает" из огня).
   if (isRocket) {
-    ctx.fillStyle = "rgba(100, 116, 139, 0.35)";
-    const trailX = bullet.x - Math.sign(bullet.vx || 1) * 14;
-    const trailY = bullet.y - Math.sign(bullet.vy || 0) * 14;
+    const backX = -Math.cos(angle);
+    const backY = -Math.sin(angle);
+    const exhaustLen = r * 3.4;
+    const flicker = 0.75 + 0.25 * Math.sin(t * 40 + bullet.x * 0.2);
+
+    // дымная осадка — дальше от сопла, шире и бледнее
+    const smokeTailX = bullet.x + backX * exhaustLen * 1.6;
+    const smokeTailY = bullet.y + backY * exhaustLen * 1.6;
+    const smokeGrad = ctx.createLinearGradient(bullet.x, bullet.y, smokeTailX, smokeTailY);
+    smokeGrad.addColorStop(0, "rgba(87, 83, 78, 0.5)");
+    smokeGrad.addColorStop(1, "rgba(87, 83, 78, 0)");
+    ctx.strokeStyle = smokeGrad;
+    ctx.lineWidth = r * 1.3;
+    ctx.lineCap = "round";
     ctx.beginPath();
-    ctx.ellipse(trailX, trailY, r * 1.1, r * 0.6, 0, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(bullet.x, bullet.y);
+    ctx.lineTo(smokeTailX, smokeTailY);
+    ctx.stroke();
+
+    // яркое пламя выхлопа — короче дыма, ближе к соплу, с "трепещущей" длиной
+    const fireLen = exhaustLen * flicker;
+    const fireTailX = bullet.x + backX * fireLen;
+    const fireTailY = bullet.y + backY * fireLen;
+    const fireGrad = ctx.createLinearGradient(bullet.x, bullet.y, fireTailX, fireTailY);
+    fireGrad.addColorStop(0, `rgba(255, 241, 199, ${0.95 * flicker})`);
+    fireGrad.addColorStop(0.4, `rgba(251, 146, 60, ${0.8 * flicker})`);
+    fireGrad.addColorStop(1, "rgba(234, 88, 12, 0)");
+    ctx.strokeStyle = fireGrad;
+    ctx.lineWidth = r * 0.85;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(bullet.x, bullet.y);
+    ctx.lineTo(fireTailX, fireTailY);
+    ctx.stroke();
+
+    // 2-3 отдельных клуба огня по бокам хвоста — ломает идеально прямую
+    // линию выхлопа, читается как живое пламя, а не статичный градиент
+    for (let i = 0; i < 3; i++) {
+      const along = 0.3 + i * 0.28;
+      const wobble = Math.sin(t * 24 + i * 2.4 + bullet.x * 0.05) * r * 0.35;
+      const px = bullet.x + backX * exhaustLen * along - backY * wobble;
+      const py2 = bullet.y + backY * exhaustLen * along + backX * wobble;
+      const puffR = r * (0.55 - i * 0.12) * flicker;
+      const puffGrad = ctx.createRadialGradient(px, py2, 0, px, py2, puffR);
+      puffGrad.addColorStop(0, `rgba(253, 186, 116, ${0.7 * flicker})`);
+      puffGrad.addColorStop(1, "rgba(234, 88, 12, 0)");
+      ctx.fillStyle = puffGrad;
+      ctx.beginPath();
+      ctx.arc(px, py2, puffR, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   // тень
@@ -675,7 +841,53 @@ export function drawBullet3D(ctx, bullet, t = 0) {
   ctx.lineWidth = isMinigun ? 1 : isCannon || isUltimate ? 2 : 1.5;
   ctx.strokeStyle = palette.stroke;
 
-  if (isShell) {
+  if (isRocket) {
+    // корпус ракеты: удлинённый цилиндр с острым носовым конусом и парой
+    // стабилизаторов-плавников у хвоста — читается однозначно как ракета,
+    // не переиспользованный "снарядный" силуэт других видов пуль
+    const bodyLen = r * 2.1;
+    const bodyWidth = r * 0.6;
+    ctx.save();
+    ctx.translate(bullet.x, py);
+    ctx.rotate(angle);
+
+    // плавники — тёмный треугольный силуэт по бокам хвоста, рисуются под
+    // корпусом (первыми), чтобы корпус лежал поверх их основания
+    ctx.fillStyle = shadeColor(palette.core[2], -0.3);
+    ctx.beginPath();
+    ctx.moveTo(-bodyLen * 0.35, -bodyWidth * 0.6);
+    ctx.lineTo(-bodyLen * 0.65, -bodyWidth * 1.6);
+    ctx.lineTo(-bodyLen * 0.5, -bodyWidth * 0.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-bodyLen * 0.35, bodyWidth * 0.6);
+    ctx.lineTo(-bodyLen * 0.65, bodyWidth * 1.6);
+    ctx.lineTo(-bodyLen * 0.5, bodyWidth * 0.5);
+    ctx.closePath();
+    ctx.fill();
+
+    // основной цилиндрический корпус — прямые борта, не эллипс, плюс острый нос
+    ctx.beginPath();
+    ctx.moveTo(bodyLen * 0.55, 0); // остриё носового конуса
+    ctx.lineTo(bodyLen * 0.15, -bodyWidth);
+    ctx.lineTo(-bodyLen * 0.5, -bodyWidth);
+    ctx.lineTo(-bodyLen * 0.5, bodyWidth);
+    ctx.lineTo(bodyLen * 0.15, bodyWidth);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // узкая световая полоса вдоль верхней грани — придаёт цилиндру объём
+    // (иначе плоская чёрная заливка сливается в силуэт без формы)
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.5)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(bodyLen * 0.4, -bodyWidth * 0.55);
+    ctx.lineTo(-bodyLen * 0.4, -bodyWidth * 0.55);
+    ctx.stroke();
+    ctx.restore();
+  } else if (isShell) {
     // снарядная форма: вытянутый эллипс вдоль направления полёта с заострённым
     // носом — не окружность, читается как летящий снаряд, а не точка/шарик
     const bodyLen = r * (isUltimate ? 1.9 : 1.6);
@@ -835,6 +1047,50 @@ export function drawLaserShot3D(ctx, shot, age) {
   ctx.stroke();
 
   ctx.restore();
+}
+
+// синхронизировано с LASER_STAR_RANGE/LASER_STAR_WIDTH на сервере
+const LASER_STAR_RANGE = 380.0;
+const LASER_STAR_WIDTH = 14.0;
+
+// Лазерная звезда игрока (замена старого пассивного super-баффа) — 8 лучей
+// НЕПРЕРЫВНО горят все LASER_STAR_DURATION секунд (не мгновенная вспышка,
+// как drawLaserShot3D у мини-босса), углы зафиксированы на сервере в момент
+// подбора — здесь только рендер уже готового списка углов. Переиспользует
+// эстетику лазера босса (яркое ядро + красный ореол), но веером из центра
+// танка, а не одной линией.
+export function drawLaserStar3D(ctx, x, y, angles, t) {
+  const pulse = 0.75 + 0.25 * Math.sin(t * 14);
+  for (const angle of angles) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+
+    ctx.strokeStyle = `rgba(239, 68, 68, ${0.45 * pulse})`;
+    ctx.lineWidth = LASER_STAR_WIDTH * 1.8;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(LASER_STAR_RANGE, 0);
+    ctx.stroke();
+
+    ctx.strokeStyle = `rgba(255, 241, 199, ${0.9 * pulse})`;
+    ctx.lineWidth = LASER_STAR_WIDTH * 0.6;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(LASER_STAR_RANGE, 0);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  // яркое ядро-ступица в центре, откуда расходятся все 8 лучей
+  const hubGlow = ctx.createRadialGradient(x, y, 0, x, y, 16);
+  hubGlow.addColorStop(0, `rgba(255, 241, 199, ${0.85 * pulse})`);
+  hubGlow.addColorStop(1, "rgba(239, 68, 68, 0)");
+  ctx.fillStyle = hubGlow;
+  ctx.beginPath();
+  ctx.arc(x, y, 16, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 export function drawTeleportEffect3D(ctx, effect, age) {
@@ -1237,6 +1493,36 @@ export function drawWallHitSpark3D(ctx, hit, age) {
   ctx.fill();
 }
 
+// Момент попадания сквозной (pierce) пули снайпера — раньше пуля пролетала
+// цель без ЛЮБОГО визуального отклика (в отличие от обычных пуль, которые
+// гаснут при ударе), из-за чего попадание читалось как промах, хотя урон
+// проходил. Короткая яркая искра НЕ останавливает полёт снаряда — только
+// отмечает точку контакта. Лёгкая (не большой взрыв) — срабатывает на КАЖДОЙ
+// пробитой цели одного выстрела, не должна перегружать экран при частой стрельбе.
+export function drawPierceHitSpark3D(ctx, hit, age) {
+  if (age >= 1) return;
+  const alpha = 1 - age;
+  const r = 4 + age * 8;
+  const glow = ctx.createRadialGradient(hit.x, hit.y, 0, hit.x, hit.y, r * 1.8);
+  glow.addColorStop(0, `rgba(165, 243, 252, ${0.9 * alpha})`);
+  glow.addColorStop(1, "rgba(103, 232, 249, 0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(hit.x, hit.y, r * 1.8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // короткие лучики-искры в стороны — читается как "пробитие", а не просто вспышка
+  ctx.strokeStyle = `rgba(236, 254, 255, ${0.85 * alpha})`;
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + age * 2;
+    ctx.beginPath();
+    ctx.moveTo(hit.x, hit.y);
+    ctx.lineTo(hit.x + Math.cos(a) * r, hit.y + Math.sin(a) * r);
+    ctx.stroke();
+  }
+}
+
 // Длина ствола до дульного среза по классу танка — ДОЛЖНА совпадать с
 // barrelLen, используемым внутри drawTank3D для каждой ветки (снайпер длинный,
 // brawler короче, gunner барабан, мини-босс спаренный) — иначе позиция
@@ -1324,9 +1610,17 @@ export function drawTank3D(
     has_super: hasSuper,
     has_spawn_protection: hasSpawnProtection,
     is_miniboss: isMiniboss,
+    is_burning: isBurning,
+    is_falling: isFalling,
+    fall_progress: fallProgress,
     weapon,
     gun_skin: gunSkin,
   } = player;
+  // "weapon" в state уже приходит как "cannon", когда пикап истёк (см.
+  // room.py._broadcast_state: p.weapon if now < p.weapon_until else "cannon") —
+  // поэтому рескин ствола под подобранное оружие достаточно проверять по
+  // самому значению weapon, отдельный until на клиенте не нужен
+  const pickupWeaponActive = weapon && weapon !== "cannon";
   const level = player.level ?? 1;
   // чем выше уровень — тем крупнее и золотистее танк (визуальный статус
   // прокачки, помимо цифры в бейдже), а супер-бафф ещё и раздувает сам
@@ -1354,6 +1648,18 @@ export function drawTank3D(
   const spawnAlpha = hasSpawnProtection ? 0.5 + 0.4 * Math.sin((t ?? 0) * 14) : 1;
   ctx.save();
   ctx.globalAlpha = spawnAlpha;
+
+  // падение в яму: короткое окно (PIT_FALL_TIME на сервере) — танк уменьшается,
+  // проседает вниз (screenY со сдвигом по z в минус) и слегка закручивается,
+  // одновременно тая — читается как "проваливается в бездну", а не мгновенно исчезает
+  if (isFalling) {
+    const fp = fallProgress ?? 0;
+    ctx.translate(x, screenY(y, -fp * fp * 90));
+    ctx.rotate(fp * 3.2);
+    ctx.scale(1 - fp * 0.85, 1 - fp * 0.85);
+    ctx.translate(-x, -y);
+    ctx.globalAlpha = spawnAlpha * (1 - fp * 0.9);
+  }
 
   // тень корпуса на полу — квадратная под форму корпуса (не овал), смещена
   // в направлении от света; крупнее у мини-босса пропорционально размеру
@@ -1440,19 +1746,56 @@ export function drawTank3D(
 
   // гусеницы по бокам корпуса — раньше корпус был просто плоским квадратом,
   // без них силуэт не читался как танк. Рисуются под корпусом, чуть выступая
-  // по бокам, с сегментами-траками для ощущения механической детали.
-  const trackWidth = tankSize * 0.16;
+  // по бокам, с видимыми опорными катками поверх ленты — так гусеница
+  // читается как настоящая механическая деталь "сбоку", а не гладкая полоса.
+  const trackWidth = tankSize * 0.2;
   const trackInset = half * 0.08;
+  const trackTop = topY - half - 3;
+  const trackHeight = tankSize + 6;
+
+  // сама гусеничная лента — тёмная, со скруглёнными "барабанами" на концах
   ctx.fillStyle = "#1c1f18";
-  ctx.fillRect(-half - trackWidth + trackInset, topY - half - 2, trackWidth, tankSize + 4);
-  ctx.fillRect(half - trackInset, topY - half - 2, trackWidth, tankSize + 4);
-  ctx.fillStyle = "rgba(0,0,0,0.35)";
-  const trackSegments = 5;
-  for (let i = 0; i < trackSegments; i++) {
-    const segY = topY - half + (i + 0.5) * (tankSize / trackSegments);
-    ctx.fillRect(-half - trackWidth + trackInset + 1, segY - 1.5, trackWidth - 2, 3);
-    ctx.fillRect(half - trackInset + 1, segY - 1.5, trackWidth - 2, 3);
+  drawRoundedRect(ctx, -half - trackWidth + trackInset, trackTop, trackWidth, trackHeight, trackWidth / 2);
+  ctx.fill();
+  drawRoundedRect(ctx, half - trackInset, trackTop, trackWidth, trackHeight, trackWidth / 2);
+  ctx.fill();
+
+  // тонкий металлический блик по внешнему краю ленты — читается как рант
+  // катка, видимый сбоку, вместо плоского чёрного прямоугольника
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.lineWidth = 1;
+  drawRoundedRect(ctx, -half - trackWidth + trackInset, trackTop, trackWidth, trackHeight, trackWidth / 2);
+  ctx.stroke();
+  drawRoundedRect(ctx, half - trackInset, trackTop, trackWidth, trackHeight, trackWidth / 2);
+  ctx.stroke();
+
+  // опорные катки — ряд кружков поверх ленты, классический силуэт гусеницы
+  // "вид сбоку"; каждый со своим объёмным градиентом, а не плоской заливкой
+  const wheelR = trackWidth * 0.36;
+  const wheelCount = Math.max(3, Math.round(tankSize / (wheelR * 2.6)));
+  for (let i = 0; i < wheelCount; i++) {
+    const wy = trackTop + wheelR + 2 + (i * (trackHeight - wheelR * 2 - 4)) / Math.max(1, wheelCount - 1);
+    for (const wx of [-half - trackWidth / 2 + trackInset, half + trackWidth / 2 - trackInset]) {
+      const wheelGrad = ctx.createRadialGradient(wx - wheelR * 0.3, wy - wheelR * 0.3, 0.5, wx, wy, wheelR);
+      wheelGrad.addColorStop(0, "#4b5157");
+      wheelGrad.addColorStop(1, "#0f1216");
+      ctx.fillStyle = wheelGrad;
+      ctx.beginPath();
+      ctx.arc(wx, wy, wheelR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
   }
+
+  // надгусеничные полки — корпус нависает над лентой гусеницы своей тенью,
+  // классический силуэт танка "сбоку" вместо корпуса, торчащего вровень
+  // с катками. Тонкая тёмная кромка поверх верхней части каждой гусеницы.
+  const fenderShade = shadeColor(bodyColorDark, -0.25);
+  ctx.fillStyle = fenderShade;
+  ctx.fillRect(-half - trackWidth + trackInset - 1, trackTop - 1, trackWidth + 2, 5);
+  ctx.fillRect(half - trackInset - 1, trackTop - 1, trackWidth + 2, 5);
 
   // боковые грани корпуса, направленно освещённые — южная (низ) и восточная
   // (правый бок), каждая своим оттенком по faceLighting, вместо одного
@@ -1500,15 +1843,91 @@ export function drawTank3D(
   ctx.fillRect(-half * 0.35, topY - half + 3, half * 0.7, tankSize - 6);
 
   if (hasSlow) {
-    // ледяной оттенок поверх корпуса — читается как "заторможен"
+    // "закован в лёд": ледяной оттенок поверх корпуса + тонкий кристаллический
+    // контур по краю (ломаная, не идеальный прямоугольник) — раньше был только
+    // плоский цветной оверлей без текстуры, теперь читается как настоящая корка льда
     ctx.fillStyle = "rgba(56, 189, 248, 0.35)";
     ctx.fillRect(-half, topY - half, tankSize, tankSize);
+    ctx.strokeStyle = "rgba(224, 242, 254, 0.75)";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const fx = -half + (i / 4) * tankSize;
+      const jag = (i % 2 === 0 ? 1 : -1) * tankSize * 0.08;
+      ctx.moveTo(fx, topY - half);
+      ctx.lineTo(fx + jag, topY - half + tankSize * 0.28);
+      ctx.moveTo(fx, topY + half);
+      ctx.lineTo(fx - jag, topY + half - tankSize * 0.28);
+    }
+    ctx.stroke();
   }
 
-  if (hasArmor || hasSuper) {
-    ctx.strokeStyle = hasSuper ? "#facc15" : "#38bdf8";
-    ctx.lineWidth = hasSuper ? 4 : 3;
+  if (isBurning) {
+    // горящий танк: тёплый оранжево-красный оттенок поверх корпуса + пара
+    // "языков" пламени, поднимающихся с корпуса — зеркалит паттерн hasSlow
+    // (полупрозрачный оверлей своим цветом), но с анимированными огоньками
+    // вместо статичного кристаллического контура, т.к. огонь должен "жить"
+    const burnFlicker = 0.7 + 0.3 * Math.sin((t ?? 0) * 22 + x * 0.15);
+    ctx.fillStyle = `rgba(239, 68, 68, ${0.22 * burnFlicker})`;
+    ctx.fillRect(-half, topY - half, tankSize, tankSize);
+    for (let i = 0; i < 3; i++) {
+      const emberPhase = (t ?? 0) * 3.5 + i * 2.1;
+      const ex = -half + tankSize * (0.2 + i * 0.3);
+      const riseFrac = (emberPhase % 1);
+      const ey = topY - half - riseFrac * tankSize * 0.5;
+      const emberAlpha = (1 - riseFrac) * 0.85;
+      const emberR = 2.5 + Math.sin(emberPhase * 6) * 1;
+      const emberGrad = ctx.createRadialGradient(ex, ey, 0, ex, ey, emberR * 2.2);
+      emberGrad.addColorStop(0, `rgba(255, 214, 140, ${emberAlpha})`);
+      emberGrad.addColorStop(0.5, `rgba(249, 115, 22, ${emberAlpha * 0.7})`);
+      emberGrad.addColorStop(1, "rgba(249, 115, 22, 0)");
+      ctx.fillStyle = emberGrad;
+      ctx.beginPath();
+      ctx.arc(ex, ey, emberR * 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  if (hasArmor) {
+    // броня: раньше — плоская цветная рамка (strokeRect), убрано по просьбе —
+    // теперь шестигранная "бронеплитная" насечка по периметру корпуса + мягкое
+    // дышащее свечение, читается как реальная броневая обшивка, а не декор-рамка
+    const armorPulse = 0.6 + 0.4 * Math.sin((t ?? 0) * 5);
+    ctx.save();
+    ctx.shadowColor = "rgba(56, 189, 248, 0.6)";
+    ctx.shadowBlur = 6 + armorPulse * 4;
+    ctx.strokeStyle = `rgba(125, 211, 252, ${0.55 + armorPulse * 0.25})`;
+    ctx.lineWidth = 1.6;
+    const plateCount = 4;
+    for (let i = 0; i < plateCount; i++) {
+      const px0 = -half + (i / plateCount) * tankSize;
+      const px1 = -half + ((i + 1) / plateCount) * tankSize - 2;
+      // короткие насечки-заклёпки вдоль верхней и нижней кромки корпуса,
+      // а не одна замкнутая рамка — читается как ряд бронеплит, а не контур
+      ctx.beginPath();
+      ctx.moveTo(px0 + 1, topY - half - 1);
+      ctx.lineTo(px1, topY - half - 1);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px0 + 1, topY + half + 1);
+      ctx.lineTo(px1, topY + half + 1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  if (hasSuper) {
+    // hasSuper теперь исключительно награда за мини-босса (см. apply_miniboss_kill_reward) —
+    // сохранён яркий пульсирующий контур как явный сигнал редкого мощного баффа,
+    // отличимый от обычной брони по цвету/интенсивности
+    const superPulse = 0.6 + 0.4 * Math.sin((t ?? 0) * 8);
+    ctx.save();
+    ctx.shadowColor = "rgba(250, 204, 21, 0.8)";
+    ctx.shadowBlur = 8 + superPulse * 6;
+    ctx.strokeStyle = `rgba(253, 224, 71, ${0.7 + superPulse * 0.3})`;
+    ctx.lineWidth = 3;
     ctx.strokeRect(-half - 2, topY - half - 2, tankSize + 4, tankSize + 4);
+    ctx.restore();
   }
 
   if (hasSpeedBoost) {
@@ -1548,7 +1967,16 @@ export function drawTank3D(
   // скин пушки — чисто косметический выбор из меню, применяется только к
   // обычным игрокам (мини-босс всегда красный, это индикатор угрозы, а не
   // персонализация)
-  const skin = GUN_SKIN_COLORS[gunSkin] || GUN_SKIN_COLORS.steel;
+  // рескин ствола под подобранное оружие с карты (fire/rocket/ice) — цветовой
+  // слой ПОВЕРХ обычного скина класса, а не замена формы: снайпер остаётся
+  // длинным тонким стволом, brawler — двойным, и т.д., просто в другом цвете +
+  // с доп. свечением на срезе. Независим от GUN_SKIN_COLORS (косметика меню) —
+  // подобранное оружие временное и должно быть видно поверх любого скина.
+  const baseSkin = GUN_SKIN_COLORS[gunSkin] || GUN_SKIN_COLORS.steel;
+  const skin =
+    pickupWeaponActive && PICKUP_BARREL_SKINS[weapon]
+      ? PICKUP_BARREL_SKINS[weapon]
+      : baseSkin;
   const turretGrad = ctx.createRadialGradient(-3, -3, 1, 0, 0, tankSize / 3);
   turretGrad.addColorStop(0, isMiniboss ? "#7f1d1d" : skin.turret);
   turretGrad.addColorStop(1, isMiniboss ? "#1a0505" : skin.turretDark);
@@ -1647,6 +2075,22 @@ export function drawTank3D(
   } else {
     drawBarrelSegment(ctx, barrelPullback, tankSize / 2 + 8, 6, skin);
     drawMuzzleCollar(ctx, barrelPullback + tankSize / 2 + 8 - 3, 4, skin);
+  }
+
+  // свечение на срезе рескинутого ствола — уголёк/изморозь на конце, чтобы
+  // подобранное оружие читалось однозначно даже когда сама смена цвета
+  // ствола не так заметна на маленьком масштабе танка
+  if (pickupWeaponActive && PICKUP_BARREL_SKINS[weapon]) {
+    const glowLen = getMuzzleBarrelLength(tankSize, player.tank_class, isMiniboss);
+    const glowPulse = 0.6 + 0.4 * Math.sin((t ?? 0) * 6);
+    const glowColor = weapon === "ice" ? "191, 219, 254" : "251, 146, 60";
+    const glow = ctx.createRadialGradient(barrelPullback + glowLen - 4, 0, 0, barrelPullback + glowLen - 4, 0, 7);
+    glow.addColorStop(0, `rgba(${glowColor}, ${0.8 * glowPulse})`);
+    glow.addColorStop(1, `rgba(${glowColor}, 0)`);
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(barrelPullback + glowLen - 4, 0, 7, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.restore();
 

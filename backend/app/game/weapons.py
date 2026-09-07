@@ -22,6 +22,10 @@ from app.game.entities import (
     ROCKET_DIRECT_DAMAGE,
     ROCKET_SPLASH_RADIUS,
     ROCKET_SPLASH_DAMAGE,
+    ICE_COOLDOWN,
+    ICE_SPEED,
+    ICE_SIZE,
+    ICE_DAMAGE,
     SNIPER_COOLDOWN,
     SNIPER_DAMAGE,
     SNIPER_SPEED,
@@ -48,6 +52,11 @@ from app.game.entities import (
     ULTIMATE_SPLASH_DAMAGE,
     TANK_CLASSES,
     DEFAULT_TANK_CLASS,
+    LASER_STAR_BEAM_COUNT,
+    LASER_STAR_RANGE,
+    LASER_STAR_WIDTH,
+    LASER_STAR_TICK_INTERVAL,
+    LASER_STAR_TICK_DAMAGE,
 )
 
 _WEAPON_COOLDOWN = {
@@ -55,6 +64,7 @@ _WEAPON_COOLDOWN = {
     "minigun": MINIGUN_COOLDOWN,
     "flamethrower": FLAMETHROWER_COOLDOWN,
     "rocket": ROCKET_COOLDOWN,
+    "ice": ICE_COOLDOWN,
 }
 
 _CLASS_COOLDOWN = {
@@ -90,16 +100,18 @@ class WeaponMixin:
             return
         now = time.monotonic()
 
-        # подобранное оружие с карты (minigun/flamethrower/rocket) — ДОПОЛНИТЕЛЬНЫЙ
+        # подобранное оружие с карты (flamethrower/rocket/ice) — ДОПОЛНИТЕЛЬНЫЙ
         # режим атаки поверх постоянного оружия класса, а не замена: класс
         # продолжает стрелять как обычно по основной кнопке (ЛКМ), а пикап
         # доступен отдельно по use_pickup=True (ПКМ) пока не истёк weapon_until.
         # Раньше пикап временно ПОДМЕНЯЛ оружие класса целиком — так игрок на
         # время терял свой снайпер/ближний бой/пулемёт вместо усиления им.
+        # "minigun" оставлен в списке кодовых веток ниже (используется классом
+        # gunner напрямую), но убран из пула карты — здесь больше не встретится.
         pickup_active = now < player.weapon_until and player.weapon in (
-            "minigun",
             "flamethrower",
             "rocket",
+            "ice",
         )
         if use_pickup:
             if not pickup_active:
@@ -155,6 +167,9 @@ class WeaponMixin:
             )
             self.bullets[bullet.id] = bullet
         elif weapon == "rocket":
+            # _explode_rocket ниже берёт радиус/урон сплэша из модульных констант
+            # ROCKET_SPLASH_*, а не из полей bullet — сплэш не масштабируется
+            # boost_mult намеренно (то же поведение, что было до правки баланса)
             bullet = Bullet.new(
                 player.id,
                 muzzle_x,
@@ -165,6 +180,22 @@ class WeaponMixin:
                 size=ROCKET_SIZE,
                 bounces=0,
                 kind="rocket",
+            )
+            self.bullets[bullet.id] = bullet
+        elif weapon == "ice":
+            # одиночный выстрел (не автомат, в отличие от minigun/rocket-очереди
+            # нет) — умеренный урон + короткий слоу при попадании (см.
+            # _check_bullet_collisions в room.py, где bullet.kind == "ice" читается)
+            bullet = Bullet.new(
+                player.id,
+                muzzle_x,
+                muzzle_y,
+                player.turret_angle,
+                round(ICE_DAMAGE * boost_mult),
+                speed=ICE_SPEED,
+                size=ICE_SIZE,
+                bounces=0,
+                kind="ice",
             )
             self.bullets[bullet.id] = bullet
         elif player.tank_class == "sniper":
@@ -325,3 +356,43 @@ class WeaponMixin:
             mult = owner.level_damage_mult() if owner is not None else 1.0
             dmg = round(FLAMETHROWER_BURN_TICK_DAMAGE * mult)
             self._apply_damage(player, dmg, player.burn_owner_id)
+
+    def _process_laser_star(self, now: float) -> None:
+        # замена старого пассивного "super"-баффа: 8 лучей зафиксированы под
+        # углом относительно башни в момент подбора (laser_star_angles не
+        # меняются, пока действует бафф) и тикают урон сами — не привязаны к
+        # кнопке стрельбы игрока, см. _apply_pickup в room.py. Геометрия
+        # проверки такая же, как у лазера мини-босса (_fire_miniboss_laser в
+        # miniboss.py): проекция на направление луча + перпендикулярное
+        # расстояние, но здесь ЛУЧ КОНЕЧНОЙ длины (along ограничен диапазоном
+        # [0, LASER_STAR_RANGE], не бьёт "назад" вдоль своей же линии).
+        # Стены намеренно игнорируются (не режем длину луча по геометрии
+        # укрытий) — по спеку это визуальный/игровой эффект, не хитскан-снайпер,
+        # усложнять геометрию под стены ради 5-секундного баффа не оправдано.
+        for player in list(self.players.values()):
+            if not player.alive or now >= player.laser_star_until:
+                continue
+            if not player.laser_star_angles:
+                continue
+            if now - player.laser_star_last_tick_at < LASER_STAR_TICK_INTERVAL:
+                continue
+            player.laser_star_last_tick_at = now
+            mult = player.level_damage_mult()
+            dmg = round(LASER_STAR_TICK_DAMAGE * mult)
+            # снимок целей — см. комментарий в _explode_rocket
+            for target in list(self.players.values()):
+                if target.id == player.id or not target.alive:
+                    continue
+                tx, ty = target.x - player.x, target.y - player.y
+                hit = False
+                for angle in player.laser_star_angles:
+                    dx, dy = math.cos(angle), math.sin(angle)
+                    along = tx * dx + ty * dy
+                    if along < 0 or along > LASER_STAR_RANGE:
+                        continue
+                    perp = abs(tx * dy - ty * dx)
+                    if perp <= LASER_STAR_WIDTH / 2 + target.size / 2:
+                        hit = True
+                        break
+                if hit:
+                    self._apply_damage(target, dmg, player.id)

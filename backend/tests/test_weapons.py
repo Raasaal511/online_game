@@ -6,14 +6,17 @@ import pytest
 from app.game.entities import Player
 
 
-def test_minigun_fires_and_damages_target(room):
+def test_ice_weapon_fires_and_slows_target_on_hit(room):
+    # "minigun" убран из пула пикапов карты (дублировал класс gunner) — этот
+    # тест теперь покрывает "ice", занявший его место в пуле (см. PICKUP_KINDS
+    # в room.py и WEAPON_KINDS в entities.py)
     p1 = Player.new("P1", 100, 100)
     p2 = Player.new("P2", 200, 100)
     room.players[p1.id] = p1
     room.players[p2.id] = p2
 
     now = time.monotonic()
-    p1.weapon = "minigun"
+    p1.weapon = "ice"
     p1.weapon_until = now + 30
     p1.turret_angle = 0.0
 
@@ -21,14 +24,37 @@ def test_minigun_fires_and_damages_target(room):
     room.try_shoot(p1.id, use_pickup=True)
     assert len(room.bullets) == 1
     bullet = list(room.bullets.values())[0]
-    assert bullet.kind == "minigun"
+    assert bullet.kind == "ice"
 
     for _ in range(10):
         room._tick()
         if p2.hp < hp_before:
             break
     else:
-        raise AssertionError("minigun bullet never hit the target")
+        raise AssertionError("ice bullet never hit the target")
+
+    assert p2.slow_until > time.monotonic(), "ice hit should slow the target"
+
+
+def test_rocket_direct_damage_matches_buffed_constant(room):
+    # баланс поднят: ROCKET_DIRECT_DAMAGE было 55, теперь 65 (см. entities.py)
+    from app.game.entities import ROCKET_DIRECT_DAMAGE
+
+    assert ROCKET_DIRECT_DAMAGE == 65
+
+    p1 = Player.new("P1", 100, 450)
+    p2 = Player.new("P2", 400, 450)
+    room.players[p1.id] = p1
+    room.players[p2.id] = p2
+
+    now = time.monotonic()
+    p1.weapon = "rocket"
+    p1.weapon_until = now + 30
+    p1.turret_angle = 0.0
+
+    room.try_shoot(p1.id, use_pickup=True)
+    bullet = list(room.bullets.values())[0]
+    assert bullet.damage == ROCKET_DIRECT_DAMAGE
 
 
 def test_rocket_deals_splash_damage(room):

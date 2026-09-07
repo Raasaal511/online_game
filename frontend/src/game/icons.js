@@ -18,6 +18,8 @@ const ICON_PATHS = {
   flamethrower: "M0,-7 C3,-3 4,0 2,3 C4,2 5,-1 4,-3 C6,0 6,4 3,6.5 C0,8 -4,6 -4,2 C-4,-1 -2,-3 0,-7 Z",
   // ракета
   rocket: "M0,-7 L2.5,-2 L2.5,4 L0,7 L-2.5,4 L-2.5,-2 Z M-2.5,2 L-5,5 M2.5,2 L5,5",
+  // снежинка ледомёта — 3 пересекающиеся оси с засечками
+  ice: "M0,-7 L0,7 M-6,-3.5 L6,3.5 M-6,3.5 L6,-3.5 M0,-7 L-2,-4.5 M0,-7 L2,-4.5 M0,7 L-2,4.5 M0,7 L2,4.5",
 };
 
 const iconPathCache = new Map();
@@ -43,7 +45,7 @@ export function drawIcon(ctx, kind, color = "#fff", scale = 1) {
   ctx.lineWidth = 1.4 / scale;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  if (["speed", "minigun", "rocket"].includes(kind)) {
+  if (["speed", "minigun", "rocket", "ice"].includes(kind)) {
     ctx.stroke(path);
     if (kind === "rocket") ctx.fill(path);
   } else {

@@ -1,7 +1,7 @@
 from app.game.entities import Wall
 
-FIELD_WIDTH = 1700
-FIELD_HEIGHT = 1100
+FIELD_WIDTH = 1760
+FIELD_HEIGHT = 1140
 
 WALL_THICKNESS = 24
 
@@ -83,6 +83,35 @@ TRAP_POINTS: list[tuple[float, float]] = [
 # Точка супер-power-up — прямо в центральном ядре крепости (самое опасное,
 # но самое ценное место карты; единственная точка спавна для kind="super")
 SUPER_PICKUP_POINT: tuple[float, float] = (FIELD_WIDTH / 2, FIELD_HEIGHT / 2)
+
+# Яма вокруг ядра крепости: кольцо из 4 прямоугольников (по одному на сторону
+# квадратного ядра), с квадратными вырезами в местах, где уже стоят проёмы
+# крепостной стены (см. WALLS выше, гэпы 260px по каждой стороне) — эти вырезы
+# и есть узкие "мосты", единственный безопасный проход к центру. Мост сделан
+# заметно уже (80px) самого проёма в стене (260px) — стена уже пускала свободно,
+# а теперь по бокам моста в проёме ждёт яма, из-за которой пройти можно только
+# по центру прохода. Заезд в прямоугольник ниже (вне мостов) = падение (см.
+# PIT_FALL_TIME в entities.py и _process_pits в room.py).
+PIT_BRIDGE_HALF_WIDTH = 40.0  # половина ширины безопасного моста в каждом из 4 проёмов
+_pit_cx, _pit_cy = SUPER_PICKUP_POINT
+_PIT_OUTER = 205.0  # внешний край ямы — чуть меньше внутреннего края крепостной стены (230-260px от центра)
+_PIT_INNER = 70.0  # внутренний край — оставляет площадку вокруг самого пикапа не заминированной
+PIT_ZONES: list[tuple[float, float, float, float]] = [
+    # север: полоса над ядром, с вырезом-мостом по центру (x) — реализовано
+    # как два прямоугольника слева и справа от моста, а не один с вырезом,
+    # т.к. PIT_ZONES — простые прямоугольники (point-in-rect), без булевых вычитаний
+    (_pit_cx - _PIT_OUTER, _pit_cy - _PIT_OUTER, _PIT_OUTER - PIT_BRIDGE_HALF_WIDTH, _PIT_OUTER - _PIT_INNER),
+    (_pit_cx + PIT_BRIDGE_HALF_WIDTH, _pit_cy - _PIT_OUTER, _PIT_OUTER - PIT_BRIDGE_HALF_WIDTH, _PIT_OUTER - _PIT_INNER),
+    # юг
+    (_pit_cx - _PIT_OUTER, _pit_cy + _PIT_INNER, _PIT_OUTER - PIT_BRIDGE_HALF_WIDTH, _PIT_OUTER - _PIT_INNER),
+    (_pit_cx + PIT_BRIDGE_HALF_WIDTH, _pit_cy + _PIT_INNER, _PIT_OUTER - PIT_BRIDGE_HALF_WIDTH, _PIT_OUTER - _PIT_INNER),
+    # запад
+    (_pit_cx - _PIT_OUTER, _pit_cy - _PIT_OUTER, _PIT_OUTER - _PIT_INNER, _PIT_OUTER - PIT_BRIDGE_HALF_WIDTH),
+    (_pit_cx - _PIT_OUTER, _pit_cy + PIT_BRIDGE_HALF_WIDTH, _PIT_OUTER - _PIT_INNER, _PIT_OUTER - PIT_BRIDGE_HALF_WIDTH),
+    # восток
+    (_pit_cx + _PIT_INNER, _pit_cy - _PIT_OUTER, _PIT_OUTER - _PIT_INNER, _PIT_OUTER - PIT_BRIDGE_HALF_WIDTH),
+    (_pit_cx + _PIT_INNER, _pit_cy + PIT_BRIDGE_HALF_WIDTH, _PIT_OUTER - _PIT_INNER, _PIT_OUTER - PIT_BRIDGE_HALF_WIDTH),
+]
 
 # Точки-кандидаты для порталов — рядом с внутренними стенами/укрытиями (не с
 # внешней границей, чтобы портал не зажимал танк у края карты), достаточно

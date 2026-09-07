@@ -12,6 +12,7 @@ dist/
 
 # Env
 .env
+.claude
 
 # OS
 .DS_Store

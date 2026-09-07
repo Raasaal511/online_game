@@ -19,7 +19,8 @@ export function useGameSocket(nickname, tankClass = "gunner", gunSkin = "steel")
   const [mapInfo, setMapInfo] = useState({
     walls: [],
     traps: [],
-    field: { width: 1400, height: 900 },
+    pit_zones: [],
+    field: { width: 1760, height: 1140 },
   });
   const [playerId, setPlayerId] = useState(null);
   const [deathInfo, setDeathInfo] = useState(null);
@@ -52,7 +53,12 @@ export function useGameSocket(nickname, tankClass = "gunner", gunSkin = "steel")
     const handleData = (data) => {
       if (data.type === "welcome") {
         setPlayerId(data.player_id);
-        setMapInfo({ walls: data.walls, traps: data.traps || [], field: data.field });
+        setMapInfo({
+          walls: data.walls,
+          traps: data.traps || [],
+          pit_zones: data.pit_zones || [],
+          field: data.field,
+        });
         setChatMessages(data.chat_history || []);
       } else if (data.type === "full") {
         setRoomFull(true);

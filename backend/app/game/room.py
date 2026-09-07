@@ -23,6 +23,7 @@ from app.game.entities import (
     TANK_MAX_HP,
     TRAP_DAMAGE,
     TRAP_SLOW_DURATION,
+    TRAP_SLOW_MULT,
     TRAP_TRIGGER_COOLDOWN,
     COLLISION_DAMAGE,
     COLLISION_PUSHBACK,
@@ -55,6 +56,11 @@ from app.game.entities import (
     ULTIMATE_KILLS_REQUIRED,
     GUN_SKINS,
     DEFAULT_GUN_SKIN,
+    LASER_STAR_DURATION,
+    LASER_STAR_BEAM_COUNT,
+    PIT_FALL_TIME,
+    ICE_SLOW_DURATION,
+    ICE_SLOW_MULT,
 )
 from app.game.map import (
     FIELD_WIDTH,
@@ -64,6 +70,7 @@ from app.game.map import (
     SPAWN_POINTS,
     TRAP_POINTS,
     SUPER_PICKUP_POINT,
+    PIT_ZONES,
 )
 
 # самая тонкая стена на карте — используется для расчёта под-шагов движения
@@ -77,16 +84,25 @@ MAX_PLAYERS = 10
 
 PICKUP_MAX_COUNT = 7  # больше предметов на карте одновременно — раньше жаловались, что пикапы (особенно оружие) появляются редко
 PICKUP_SPAWN_INTERVAL = 5.0
-PICKUP_KINDS = ["heal", "armor", "damage", "speed", "minigun", "flamethrower", "rocket"]
+# "minigun" убран из пула — у gunner-класса уже есть постоянное аналогичное
+# оружие, пикап с тем же ощущением на карте дублировал класс, а не добавлял
+# разнообразия; "ice" занял освободившееся место в пуле
+PICKUP_KINDS = ["heal", "armor", "damage", "speed", "flamethrower", "rocket", "ice"]
 ARMOR_DURATION = 12.0
 ARMOR_REDUCTION = 0.5  # снижение получаемого урона на 50%
 DAMAGE_BOOST_DURATION = 12.0
 DAMAGE_BOOST_MULT = 1.5
 
-SUPER_PICKUP_RESPAWN_DELAY = 45.0  # сек до повторного появления супер-баста в центре
+# доля фоновых бомб, намеренно приземляемых у ямы/супер-пикапа (см. _spawn_bombs) —
+# при площади "круга у центра" примерно вчетверо меньше площади всей карты,
+# 0.5 шанс даёт эффективную плотность там ~2-3x выше среднекарточной
+BOMB_NEAR_SUPER_CHANCE = 0.5
+
+SUPER_PICKUP_RESPAWN_DELAY = 45.0  # сек до повторного появления супер-пикапа в центре
+# SUPER_ARMOR_REDUCTION всё ещё используется наградой за мини-босса (super_until
+# остался как поле для этой отдельной механики) — сам пикап "super" на карте
+# больше НЕ выдаёт этот бафф, см. _apply_pickup: теперь это лазерная звезда
 SUPER_ARMOR_REDUCTION = 0.8
-SUPER_DAMAGE_MULT = 2.5
-SUPER_DURATION = 15.0
 
 RESPAWN_DELAY = 2.0  # сек до респавна после смерти
 
@@ -130,6 +146,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
         self._wall_hits: list[dict] = []  # стена получила урон, но не разрушена
         self._wall_breaks: list[dict] = []  # стена разрушена в этот тик
         self._wall_restores: list[dict] = []  # стена восстановилась в этот тик
+        self._hit_sparks: list[dict] = []  # сквозная пуля снайпера пробила цель, но летит дальше (см. _check_bullet_collisions)
         self._miniboss_spawns: list[dict] = []  # мини-босс появился в этот тик (событие для клиента)
         self._level_ups: list[dict] = []  # игрок поднял уровень в этот тик
         self._laser_shots: list[dict] = []  # лазер мини-босса фактически выстрелил в этот тик
@@ -174,6 +191,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
         self._wall_hits = []
         self._wall_breaks = []
         self._wall_restores = []
+        self._hit_sparks = []
         self._miniboss_spawns = []
         self._level_ups = []
         self._laser_shots = []
@@ -198,9 +216,11 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
         self._check_bullet_collisions()
         self._process_flamethrower(now)
         self._process_burning(now)
+        self._process_laser_star(now)
         self._check_pickup_collisions(now)
         self._check_trap_collisions(now)
         self._check_tank_collisions(now)
+        self._process_pits(now)
         self._process_portals(now)
 
     def _process_round(self, now: float) -> None:
@@ -364,8 +384,17 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
                         self._explode_ultimate(bullet)
                     else:
                         self._apply_damage(player, dmg, bullet.owner_id)
+                    if bullet.kind == "ice":
+                        # лёгкое, короткое замедление — отдельные константы от
+                        # ловушки (TRAP_SLOW_*), та тюнингована жёстче
+                        player.slow_until = max(player.slow_until, time.monotonic() + ICE_SLOW_DURATION)
+                        player.slow_mult = ICE_SLOW_MULT
                     if bullet.pierce:
                         bullet.hit_ids.add(player.id)
+                        # сквозная пуля (снайпер) не гаснет при попадании — без
+                        # видимого эффекта в момент удара выглядело как промах,
+                        # хотя урон реально прошёл; лёгкая искра НЕ останавливает полёт
+                        self._hit_sparks.append({"x": bullet.x, "y": bullet.y})
                     else:
                         dead_bullets.append(bullet.id)
                         break
@@ -564,6 +593,9 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
         player.weapon_until = 0.0
         player.flame_active_until = 0.0
         player.burn_until = 0.0
+        player.laser_star_until = 0.0
+        player.laser_star_angles = []
+        player.falling_since = 0.0
         if tank_class in TANK_CLASSES:
             player.tank_class = tank_class
         player.ammo = GUNNER_MAG_SIZE
@@ -646,14 +678,19 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
             base = max(now, player.speed_boost_until)
             player.speed_boost_until = base + SPEED_BOOST_DURATION
         elif pickup.kind == "super":
-            # мощный комбинированный баф: урон, броня, скорость и полный хил разом
-            base = max(now, player.super_until, player.speed_boost_until, player.damage_until)
-            player.super_until = base + SUPER_DURATION
-            player.speed_boost_until = base + SUPER_DURATION
-            player.damage_until = base + SUPER_DURATION
-            player.damage = round(20 * SUPER_DAMAGE_MULT)
+            # больше не пассивный статовый бафф — превращает танк в лазерную
+            # турель на LASER_STAR_DURATION секунд: 8 лучей фиксированы под
+            # углом ОТНОСИТЕЛЬНО ТЕКУЩЕЙ БАШНИ в момент подбора (не переприцеливаются
+            # игроком) и тикают урон сами, без удержания кнопки — см. _process_laser_star.
+            # Полный хил оставлен как "power fantasy" — не усложняет механику,
+            # но подчёркивает, что подбор супер-пикапа — момент силы.
+            player.laser_star_until = now + LASER_STAR_DURATION
+            player.laser_star_angles = [
+                player.turret_angle + i * (2 * math.pi / LASER_STAR_BEAM_COUNT)
+                for i in range(LASER_STAR_BEAM_COUNT)
+            ]
             player.hp = player.max_hp
-        elif pickup.kind in ("minigun", "flamethrower", "rocket"):
+        elif pickup.kind in ("flamethrower", "rocket", "ice"):
             player.weapon = pickup.kind
             player.weapon_until = now + WEAPON_PICKUP_DURATION
             player.last_shot_at = -999.0  # можно стрелять новым оружием сразу, без остатка кулдауна
@@ -663,10 +700,26 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
             return
         self._next_bomb_at = now + random.uniform(BOMB_MIN_INTERVAL, BOMB_MAX_INTERVAL)
 
+        # BOMB_NEAR_SUPER_CHANCE смещает выбор точки, а не глобальный интервал —
+        # так бомбы у ямы/супер-пикапа появляются заметно (2-3x) чаще НЕ ценой
+        # затопления бомбами всей остальной карты (что дал бы просто более
+        # короткий BOMB_MIN/MAX_INTERVAL)
+        near_super = random.random() < BOMB_NEAR_SUPER_CHANCE
+        cx, cy = SUPER_PICKUP_POINT
         for _ in range(20):
-            x = random.uniform(80, FIELD_WIDTH - 80)
-            y = random.uniform(80, FIELD_HEIGHT - 80)
-            if not rect_intersects_walls(x, y, BOMB_RADIUS * 0.5):
+            if near_super:
+                # круг вокруг центра, за пределами ямы (радиус ямы ~205px) —
+                # бомба должна упасть там, где до неё реально можно дойти
+                angle = random.uniform(0, math.pi * 2)
+                dist = random.uniform(220.0, 340.0)
+                x = cx + math.cos(angle) * dist
+                y = cy + math.sin(angle) * dist
+                x = max(80, min(FIELD_WIDTH - 80, x))
+                y = max(80, min(FIELD_HEIGHT - 80, y))
+            else:
+                x = random.uniform(80, FIELD_WIDTH - 80)
+                y = random.uniform(80, FIELD_HEIGHT - 80)
+            if not rect_intersects_walls(x, y, BOMB_RADIUS * 0.5) and not self._in_pit_zone(x, y):
                 bomb = Bomb.new(x, y, now)
                 self.bombs[bomb.id] = bomb
                 break
@@ -711,6 +764,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
                 ) < (player.size + trap.size) / 2:
                     player.trap_cooldown_until = now + TRAP_TRIGGER_COOLDOWN
                     player.slow_until = now + TRAP_SLOW_DURATION
+                    player.slow_mult = TRAP_SLOW_MULT
                     player.hp -= TRAP_DAMAGE
                     if player.hp <= 0:
                         player.hp = 0
@@ -760,6 +814,33 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
                         if b.hp <= 0:
                             self._kill_player(b, a.id)
 
+    def _in_pit_zone(self, x: float, y: float) -> bool:
+        for zx, zy, zw, zh in PIT_ZONES:
+            if zx <= x <= zx + zw and zy <= y <= zy + zh:
+                return True
+        return False
+
+    def _process_pits(self, now: float) -> None:
+        # яма вокруг супер-пикапа: заезд в зону запускает короткий отсчёт
+        # падения (falling_since), а не мгновенную смерть — если игрок успел
+        # выехать до истечения PIT_FALL_TIME, отсчёт сбрасывается (можно
+        # "спастись" резким манёвром, а не гарантированно терять танк при
+        # касании края ямы). Смерть проведена через _kill_player напрямую
+        # (не _apply_damage — та учитывает spawn-неуязвимость/броню, а яма
+        # должна убивать безусловно, как и урон от ловушек-самоубийц).
+        for player in list(self.players.values()):
+            if not player.alive or player.is_miniboss:
+                continue
+            if self._in_pit_zone(player.x, player.y):
+                if player.falling_since <= 0:
+                    player.falling_since = now
+                elif now - player.falling_since >= PIT_FALL_TIME:
+                    player.falling_since = 0.0
+                    player.hp = 0
+                    self._kill_player(player, player.id)  # яма = самоурон, не чужое убийство
+            else:
+                player.falling_since = 0.0
+
     def get_map_info(self) -> dict:
         return {
             "field": {"width": FIELD_WIDTH, "height": FIELD_HEIGHT},
@@ -777,6 +858,11 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
             ],
             "traps": [
                 {"x": t.x, "y": t.y, "size": t.size} for t in self.traps.values()
+            ],
+            # яма — статичная геометрия карты (как стены/ловушки), шлётся один
+            # раз при welcome, а не каждый тик в _broadcast_state
+            "pit_zones": [
+                {"x": zx, "y": zy, "width": zw, "height": zh} for zx, zy, zw, zh in PIT_ZONES
             ],
         }
 
@@ -806,11 +892,22 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
                     "has_damage_boost": now < p.damage_until,
                     "has_speed_boost": now < p.speed_boost_until,
                     "has_slow": now < p.slow_until,
+                    # has_super сохранён для награды за мини-босса (apply_miniboss_kill_reward
+                    # всё ещё пишет в super_until — это ДРУГОЙ бафф, статовый, не связан с
+                    # пикапом "super" на карте, который теперь превратился в laser_star)
                     "has_super": now < p.super_until,
                     "has_spawn_protection": now < p.spawn_protected_until,
                     "weapon": p.weapon if now < p.weapon_until else "cannon",
                     "is_flaming": now < p.flame_active_until,
                     "is_burning": now < p.burn_until,
+                    "laser_star_active": now < p.laser_star_until,
+                    "laser_star_angles": p.laser_star_angles if now < p.laser_star_until else [],
+                    "is_falling": p.falling_since > 0,
+                    "fall_progress": (
+                        max(0.0, min(1.0, (now - p.falling_since) / PIT_FALL_TIME))
+                        if p.falling_since > 0
+                        else 0.0
+                    ),
                     "level": p.level,
                     "xp": p.xp,
                     "is_miniboss": p.is_miniboss,
@@ -881,6 +978,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
             "wall_hits": self._wall_hits,
             "wall_breaks": self._wall_breaks,
             "wall_restores": self._wall_restores,
+            "hit_sparks": self._hit_sparks,
             "nuke": (
                 {
                     "x": self._active_nuke.x,

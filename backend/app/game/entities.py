@@ -24,7 +24,7 @@ DEFAULT_TANK_CLASS = "gunner"
 # Снайпер: редкий но мощный сквозной выстрел — пробивает всех на линии огня
 SNIPER_COOLDOWN = 1.5
 SNIPER_DAMAGE = 45
-SNIPER_SPEED = 1100.0
+SNIPER_SPEED = 1280.0
 SNIPER_SIZE = 8
 SNIPER_PIERCE = True
 
@@ -83,15 +83,27 @@ FLAMETHROWER_BURN_DURATION = 2.0  # горение продолжается и �
 FLAMETHROWER_BURN_TICK_DAMAGE = 3
 FLAMETHROWER_BURN_INTERVAL = 0.5
 
-# Ракетница: медленный тяжёлый снаряд, взрывается сплэшем при попадании/выключении рикошета
+# Ракетница: медленный тяжёлый снаряд, взрывается сплэшем при попадании/выключении рикошета.
+# Урон и радиус подняты на ~18% (было 55/90/30) — "чуть больше", просьба пользователя
+# сделать ракету заметно мощнее, но не превращать в one-shot оружие
 ROCKET_COOLDOWN = 1.6
 ROCKET_SPEED = 320.0
 ROCKET_SIZE = 14
-ROCKET_DIRECT_DAMAGE = 55
-ROCKET_SPLASH_RADIUS = 90.0
-ROCKET_SPLASH_DAMAGE = 30
+ROCKET_DIRECT_DAMAGE = 65
+ROCKET_SPLASH_RADIUS = 105.0
+ROCKET_SPLASH_DAMAGE = 35
 
-WEAPON_KINDS = ("cannon", "minigun", "flamethrower", "rocket")
+# Ледомёт: одиночный выстрел умеренной силы, при попадании коротко и несильно
+# замедляет цель — отдельный от ловушки (TRAP_SLOW_*) набор констант, т.к.
+# ловушка тюнингована под более долгий и жёсткий дебафф
+ICE_COOLDOWN = 0.9
+ICE_SPEED = 620.0
+ICE_SIZE = 10
+ICE_DAMAGE = 22
+ICE_SLOW_DURATION = 1.5
+ICE_SLOW_MULT = 0.65
+
+WEAPON_KINDS = ("cannon", "flamethrower", "rocket", "ice")
 WEAPON_PICKUP_DURATION = 20.0  # сек, на которые оружие подобрано с карты
 
 PICKUP_SIZE = 20
@@ -163,6 +175,21 @@ MINIBOSS_SHOTGUN_COUNT = 10
 MINIBOSS_SHOTGUN_SPREAD = 1.6
 MINIBOSS_SHOTGUN_DAMAGE_MULT = 0.45  # доля от обычного урона босса за снаряд
 
+# Лазерная звезда: замена старого пассивного "super"-баффа — 8 лучей,
+# зафиксированных под углом относительно танка в момент подбора, тикают урон
+# по всем, кого касаются, всё время действия (не требует зажатия кнопки)
+LASER_STAR_DURATION = 5.0
+LASER_STAR_BEAM_COUNT = 8
+LASER_STAR_RANGE = 380.0  # короче MINIBOSS_LASER_RANGE (900) — оружие масштаба игрока, не босса
+LASER_STAR_WIDTH = 14.0  # чуть уже MINIBOSS_LASER_WIDTH (18) — тот же класс оружия, но не копия
+LASER_STAR_TICK_INTERVAL = 0.25  # сек между тиками урона на одну цель
+LASER_STAR_TICK_DAMAGE = 9  # за 5с и тик 0.25с луч бьющий в упор даёт ~180 урона — мощно, но не мгновенная казнь
+
+# Яма вокруг супер-пикапа в ядре крепости: усложняет подход к самому ценному
+# месту карты — заезд в яму = падение и смерть через короткое время, узкие
+# "мосты" (проёмы, не помеченные как яма) остаются единственным безопасным путём
+PIT_FALL_TIME = 0.5  # сек между заездом в яму и смертью — короткое окно, чтобы успеть выехать
+
 # Ядерка: редкое глобальное событие, взрыв покрывает ~50% диагонали карты
 NUKE_MIN_INTERVAL = 100.0
 NUKE_MAX_INTERVAL = 140.0  # в среднем ~раз в 2 минуты
@@ -198,6 +225,7 @@ class Player:
     damage_until: float = 0.0  # timestamp, до которого действует бонус урона
     speed_boost_until: float = 0.0
     slow_until: float = 0.0
+    slow_mult: float = SLOW_DEBUFF_MULT  # множитель, действующий пока slow_until не истёк — ловушка и ледомёт тюнингованы по-разному
     super_until: float = 0.0  # действие супер-power-up из центра карты
     trap_cooldown_until: float = 0.0  # чтобы одна и та же ловушка не тикала каждый тик
     last_collision_at: float = -999.0  # антиспам урона при затяжном контакте танк-танк
@@ -227,6 +255,10 @@ class Player:
     ultimate_kills: int = 0  # счётчик убийств до готовности ульты (сбрасывается при использовании)
     portal_cooldown_until: float = 0.0  # антидребезг: сразу после телепортации свой портал/пара временно неактивны для игрока
     gun_skin: str = DEFAULT_GUN_SKIN  # косметический выбор в меню — не влияет на баланс
+    laser_star_until: float = 0.0  # timestamp окончания действия лазерной звезды (замена старого super-баффа)
+    laser_star_angles: list = field(default_factory=list)  # 8 углов, зафиксированы в момент подбора
+    laser_star_last_tick_at: float = -999.0
+    falling_since: float = 0.0  # 0 = не падает; >0 — момент захода в зону ямы (PIT_FALL_TIME до смерти)
 
     def lifetime(self) -> float:
         end = self.died_at if self.died_at is not None else time.monotonic()
@@ -237,7 +269,7 @@ class Player:
         if now < self.speed_boost_until:
             mult *= SPEED_BOOST_MULT
         if now < self.slow_until:
-            mult *= SLOW_DEBUFF_MULT
+            mult *= self.slow_mult
         return mult
 
     def level_hp_mult(self) -> float:
@@ -277,7 +309,7 @@ class Bullet:
     damage: int
     size: float = BULLET_SIZE
     bounces_left: int = BULLET_MAX_BOUNCES
-    kind: str = "cannon"  # "cannon" | "minigun" | "rocket" | "sniper" | "brawler" | "ultimate" — визуал/поведение
+    kind: str = "cannon"  # "cannon" | "minigun" | "rocket" | "sniper" | "brawler" | "ultimate" | "ice" — визуал/поведение
     pierce: bool = False  # True = не гаснет при попадании в игрока (снайпер), только при попадании в стену
     hit_ids: set = field(default_factory=set)  # кому уже нанесён урон — не даёт сквозной пуле бить одну цель дважды
     falloff_range: float = 0.0  # >0: урон линейно падает от damage до damage*falloff_min_mult на этой дистанции
@@ -367,7 +399,7 @@ class Pickup:
     id: str
     x: float
     y: float
-    kind: str  # "heal" | "armor" | "damage" | "speed" | "super" | "minigun" | "flamethrower" | "rocket"
+    kind: str  # "heal" | "armor" | "damage" | "speed" | "super" | "flamethrower" | "rocket" | "ice"
     size: float = PICKUP_SIZE
 
     @staticmethod

@@ -128,6 +128,90 @@ export function createParticleSystem() {
     capParticles();
   }
 
+  // цвета по типу бонуса — согласованы с рескином ствола/оверлеем на танке
+  // (PICKUP_BARREL_SKINS в render3d.js), чтобы вспышка подбора визуально
+  // "предвещала" тот же цвет, что появится на танке
+  const PICKUP_BURST_COLORS = {
+    heal: ["#4ade80", "#22c55e", "#bbf7d0"],
+    armor: ["#38bdf8", "#7dd3fc", "#e0f2fe"],
+    damage: ["#f87171", "#ef4444", "#fecaca"],
+    speed: ["#facc15", "#fde047", "#fef9c3"],
+    flamethrower: ["#f97316", "#ef4444", "#fde047"],
+    ice: ["#7dd3fc", "#38bdf8", "#e0f2fe"],
+    rocket: ["#78716c", "#f97316", "#292524"],
+    super: ["#f472b6", "#f9a8d4", "#fdf2f8"],
+  };
+
+  // вспышка подбора на месте пикапа — своя форма под каждый тип: heal
+  // разлетается крестом (лечение — "плюс"), armor смыкается кольцом (щит
+  // формируется вокруг), остальные — направленный всплеск в цвете рескина
+  function spawnPickupBurst(x, y, kind) {
+    const colors = PICKUP_BURST_COLORS[kind] || PICKUP_BURST_COLORS.speed;
+    const pick = () => colors[Math.floor(Math.random() * colors.length)];
+
+    if (kind === "heal") {
+      // 4 луча креста, по 5 частиц каждый — читается как "+" из искр
+      const arms = [0, Math.PI / 2, Math.PI, (Math.PI * 3) / 2];
+      for (const arm of arms) {
+        for (let i = 0; i < 5; i++) {
+          const dist = (i + 1) * 4;
+          particles.push({
+            x: x + Math.cos(arm) * dist,
+            y: y + Math.sin(arm) * dist,
+            z: 10,
+            vx: Math.cos(arm) * 20,
+            vy: Math.sin(arm) * 20,
+            vz: 40 + Math.random() * 30,
+            life: 0.35 + Math.random() * 0.2,
+            age: 0,
+            size: 3 + Math.random() * 2,
+            color: pick(),
+          });
+        }
+      }
+    } else if (kind === "armor") {
+      // кольцо частиц, стягивающееся к танку — читается как формирующийся щит
+      const count = 14;
+      for (let i = 0; i < count; i++) {
+        const angle = (i / count) * Math.PI * 2;
+        const startDist = 26;
+        particles.push({
+          x: x + Math.cos(angle) * startDist,
+          y: y + Math.sin(angle) * startDist,
+          z: 8,
+          vx: -Math.cos(angle) * 30,
+          vy: -Math.sin(angle) * 30,
+          vz: 10 + Math.random() * 10,
+          life: 0.4 + Math.random() * 0.15,
+          age: 0,
+          size: 2.5 + Math.random() * 1.5,
+          color: pick(),
+        });
+      }
+    } else {
+      // общий радиальный всплеск в тематическом цвете — используется для
+      // damage/speed/super и для рескин-оружий (flamethrower/ice/rocket)
+      const count = 16;
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 50 + Math.random() * 90;
+        particles.push({
+          x,
+          y,
+          z: 8,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          vz: 50 + Math.random() * 60,
+          life: 0.3 + Math.random() * 0.25,
+          age: 0,
+          size: 2.5 + Math.random() * 3,
+          color: pick(),
+        });
+      }
+    }
+    capParticles();
+  }
+
   function update(dt) {
     for (const p of particles) {
       p.age += dt;
@@ -166,6 +250,7 @@ export function createParticleSystem() {
     spawnMuzzleSmoke,
     spawnFlameParticles,
     spawnDust,
+    spawnPickupBurst,
     update,
     draw,
     getParticles,

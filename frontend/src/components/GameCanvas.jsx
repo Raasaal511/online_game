@@ -20,10 +20,13 @@ import {
   drawGroundDust3D,
   drawLaserCharge3D,
   drawLaserShot3D,
+  drawLaserStar3D,
   drawTeleportEffect3D,
   drawPortal3D,
   drawWallBreakEffect3D,
   drawWallHitSpark3D,
+  drawPierceHitSpark3D,
+  drawPitZone3D,
   drawParticles3D,
   computeTankSize,
   getMuzzleBarrelLength,
@@ -56,6 +59,7 @@ import {
 
 const WALL_BREAK_LIFETIME = 0.5;
 const WALL_HIT_LIFETIME = 0.2;
+const PIERCE_HIT_LIFETIME = 0.22; // сквозное попадание снайпера — короткая искра, не мешает читать полёт пули дальше
 
 const TANK_SIZE = 32;
 const MINIBOSS_TANK_SIZE = 96; // синхронизировано с MINIBOSS_SIZE на сервере — втрое крупнее обычного танка
@@ -70,9 +74,12 @@ const PICKUP_COLORS = {
   damage: "#f97316",
   speed: "#facc15",
   super: "#f472b6",
+  // "minigun" оставлен как безопасный fallback-цвет — сам пикап больше не
+  // спавнится (см. PICKUP_KINDS в room.py), но старое поле не мешает никому
   minigun: "#fde047",
   flamethrower: "#f97316",
   rocket: "#ef4444",
+  ice: "#7dd3fc",
 };
 
 const WEAPON_SHOOT_SOUND = {
@@ -121,13 +128,14 @@ export default function GameCanvas({
   const tracksRef = useRef(createTrackSystem());
   const lastBulletPos = useRef(new Map());
   const knownAliveState = useRef(new Map());
-  const knownPickupIds = useRef(new Set());
+  const knownPickupIds = useRef(new Map()); // id -> {x, y, kind}, для вспышки подбора при исчезновении
   const knownBombIds = useRef(new Set());
   const isFirstPickupSync = useRef(true);
   const isFirstBombSync = useRef(true);
   const explosionsRef = useRef([]); // {x, y, radius, age}
   const wallBreaksRef = useRef([]); // {x, y, age} — эффект разрушения стены
   const wallHitsRef = useRef([]); // {x, y, age} — искра при попадании без разрушения
+  const pierceHitsRef = useRef([]); // {x, y, age} — искра сквозного попадания снайпера (пуля летит дальше)
   const kickbackRef = useRef(new Map()); // playerId -> 0..1, отдача ствола
   const motionSmoothRef = useRef(new Map()); // playerId -> {emaSpeed, dirX, dirY} — EMA для эффекта разгона
   const laserChargingRef = useRef(new Set()); // playerId'ы, у которых лазер уже заряжался в прошлом кадре
@@ -145,10 +153,11 @@ export default function GameCanvas({
   const onGameEventRef = useRef(onGameEvent);
   onGameEventRef.current = onGameEvent;
 
-  const fieldWidth = mapInfo.field?.width || 1400;
-  const fieldHeight = mapInfo.field?.height || 900;
+  const fieldWidth = mapInfo.field?.width || 1760;
+  const fieldHeight = mapInfo.field?.height || 1140;
   const walls = mapInfo.walls || [];
   const traps = mapInfo.traps || [];
+  const pitZones = mapInfo.pit_zones || [];
 
   const handleShoot = () => {
     unlockAudio();
@@ -310,15 +319,17 @@ export default function GameCanvas({
       }
       hitFlashRef.current = Math.max(0, hitFlashRef.current - dt * 2.5);
 
-      // дроп исчез (кто-то подобрал) -> звук
-      const seenPickupIds = new Set();
+      // дроп исчез (кто-то подобрал) -> звук + вспышка частиц на месте,
+      // своя по типу бонуса (см. spawnPickupBurst в particles.js)
+      const seenPickupIds = new Map();
       for (const pu of current.pickups || []) {
-        seenPickupIds.add(pu.id);
+        seenPickupIds.set(pu.id, pu);
       }
       if (!isFirstPickupSync.current) {
-        for (const id of knownPickupIds.current) {
+        for (const [id, pu] of knownPickupIds.current) {
           if (!seenPickupIds.has(id)) {
             playPickupSound();
+            particles.spawnPickupBurst(pu.x, pu.y, pu.kind);
           }
         }
       }
@@ -471,6 +482,19 @@ export default function GameCanvas({
       }
       wallHitsRef.current = wallHitsRef.current.filter((e) => e.age < 1);
 
+      // сквозная пуля снайпера пробила цель -> лёгкая искра в точке контакта,
+      // САМА пуля НЕ гаснет (в отличие от wall_hits это не связано со стеной) —
+      // без этого попадание визуально читалось как промах, хотя урон прошёл
+      if (isNewTick) {
+        for (const hit of current.hit_sparks || []) {
+          pierceHitsRef.current.push({ x: hit.x, y: hit.y, age: 0 });
+        }
+      }
+      for (const hit of pierceHitsRef.current) {
+        hit.age += dt / PIERCE_HIT_LIFETIME;
+      }
+      pierceHitsRef.current = pierceHitsRef.current.filter((e) => e.age < 1);
+
       particles.update(dt);
 
       // единый проход по живым игрокам со сглаженными координатами — раньше
@@ -575,6 +599,13 @@ export default function GameCanvas({
       ctx.translate(shakeX, shakeY);
 
       drawFloor(ctx, canvas.width, canvas.height);
+
+      // яма вокруг супер-пикапа — часть уровня земли (статичная геометрия
+      // карты, пришла один раз в mapInfo), рисуется сразу после пола, до
+      // следов гусениц/танков, как и провал в полу должен лежать физически
+      for (const zone of pitZones) {
+        drawPitZone3D(ctx, zone, timestamp / 1000);
+      }
 
       // следы гусениц лежат прямо на полу, ниже всех объектов painter's algorithm
       tracks.draw(ctx);
@@ -780,6 +811,9 @@ export default function GameCanvas({
           if (obj.data.laser_charging) {
             drawLaserCharge3D(ctx, obj.data.x, obj.data.y, obj.data.laser_charging.angle, obj.data.laser_charging.progress);
           }
+          if (obj.data.laser_star_active && obj.data.laser_star_angles?.length) {
+            drawLaserStar3D(ctx, obj.data.x, obj.data.y, obj.data.laser_star_angles, timestamp / 1000);
+          }
         } else if (obj.type === "bullet") {
           drawBullet3D(ctx, obj.data, timestamp / 1000);
         }
@@ -810,6 +844,10 @@ export default function GameCanvas({
       }
       for (const brk of wallBreaksRef.current) {
         drawWallBreakEffect3D(ctx, brk, brk.age);
+      }
+      // сквозные попадания снайпера — пуля летит дальше, но контакт виден
+      for (const hit of pierceHitsRef.current) {
+        drawPierceHitSpark3D(ctx, hit, hit.age);
       }
 
       // частицы (взрывы, искры, дым, пламя) поверх всего, с псевдо-3D высотой
