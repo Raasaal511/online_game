@@ -32,7 +32,8 @@ from app.game.entities import (
     SNIPER_SIZE,
     SNIPER_PIERCE,
     BRAWLER_COOLDOWN,
-    BRAWLER_DAMAGE,
+    BRAWLER_PELLET_COUNT,
+    BRAWLER_PELLET_DAMAGE,
     BRAWLER_MIN_DAMAGE_MULT,
     BRAWLER_MAX_RANGE,
     BRAWLER_SPREAD,
@@ -213,8 +214,12 @@ class WeaponMixin:
             )
             self.bullets[bullet.id] = bullet
         elif player.tank_class == "brawler":
-            dmg = round(BRAWLER_DAMAGE * boost_mult)
-            for spread in (-BRAWLER_SPREAD / 2, BRAWLER_SPREAD / 2):
+            # дробовик: BRAWLER_PELLET_COUNT дробин одним залпом, разброс
+            # случайный в пределах BRAWLER_SPREAD (не равномерная гребёнка) —
+            # так залп читается как настоящий дробовой веер, а не строй
+            dmg = round(BRAWLER_PELLET_DAMAGE * boost_mult)
+            for _ in range(BRAWLER_PELLET_COUNT):
+                spread = random.uniform(-BRAWLER_SPREAD / 2, BRAWLER_SPREAD / 2)
                 angle = player.turret_angle + spread
                 bullet = Bullet.new(
                     player.id,

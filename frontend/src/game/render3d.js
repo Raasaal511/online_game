@@ -1555,22 +1555,75 @@ export function getMuzzleBarrelLength(tankSize, tankClass, isMiniboss) {
 // тень под стволом на башне. Раньше ствол был буквально залитой полосой
 // без контура/светотени — на любом фоне читался как плоская линия, а не
 // часть объёмной модели.
-function drawBarrelSegment(ctx, xStart, len, width, skin, yOffset = -width / 2, shade = 1) {
+function drawBarrelSegment(ctx, xStart, len, width, skin, yOffset = -width / 2, shade = 1, tapered = true) {
   const y = yOffset;
+  const yMid = y + width / 2;
+
   // контактная тень на башне под стволом
   ctx.fillStyle = "rgba(0,0,0,0.3)";
   ctx.fillRect(xStart, y + width * 0.15, len, width);
 
-  const grad = ctx.createLinearGradient(0, y, 0, y + width);
-  grad.addColorStop(0, shadeColor(skin.barrel, 0.35 * shade));
-  grad.addColorStop(0.35, skin.barrel);
-  grad.addColorStop(1, shadeColor(skin.barrelDark, -0.15));
-  ctx.fillStyle = grad;
-  ctx.fillRect(xStart, y, len, width);
+  // gunner (вращающийся барабан из тонких стволов) намеренно остаётся
+  // простым прямым сегментом — при width~3px коническая форма/кольца-муфты
+  // не читаются, только тратят кадр; и это единственный класс, чей барабан
+  // просили не трогать при доработке дизайна остальных стволов
+  if (!tapered) {
+    const grad = ctx.createLinearGradient(0, y, 0, y + width);
+    grad.addColorStop(0, shadeColor(skin.barrel, 0.35 * shade));
+    grad.addColorStop(0.35, skin.barrel);
+    grad.addColorStop(1, shadeColor(skin.barrelDark, -0.15));
+    ctx.fillStyle = grad;
+    ctx.fillRect(xStart, y, len, width);
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(xStart, y, len, width);
+    return;
+  }
 
+  // основание у башни заметно шире дула — конический ствол вместо плоской
+  // прямоугольной палки одинаковой толщины по всей длине; раньше ствол
+  // выглядел как приклеенный сверху прямоугольник без объёма и посадки
+  const baseWidth = width * 1.35;
+  const muzzleWidth = width * 0.82;
+  const taperLen = len * 0.4; // сужение происходит на первых 40% длины, дальше ствол ровный
+
+  ctx.beginPath();
+  ctx.moveTo(xStart, yMid - baseWidth / 2);
+  ctx.lineTo(xStart + taperLen, yMid - muzzleWidth / 2);
+  ctx.lineTo(xStart + len, yMid - muzzleWidth / 2);
+  ctx.lineTo(xStart + len, yMid + muzzleWidth / 2);
+  ctx.lineTo(xStart + taperLen, yMid + muzzleWidth / 2);
+  ctx.lineTo(xStart, yMid + baseWidth / 2);
+  ctx.closePath();
+
+  const grad = ctx.createLinearGradient(0, yMid - baseWidth / 2, 0, yMid + baseWidth / 2);
+  grad.addColorStop(0, shadeColor(skin.barrel, 0.4 * shade));
+  grad.addColorStop(0.3, skin.barrel);
+  grad.addColorStop(0.55, shadeColor(skin.barrelDark, 0.05));
+  grad.addColorStop(1, shadeColor(skin.barrelDark, -0.2));
+  ctx.fillStyle = grad;
+  ctx.fill();
   ctx.strokeStyle = "rgba(0,0,0,0.55)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(xStart, y, len, width);
+  ctx.stroke();
+
+  // узкий яркий блик по верхней грани — читается как круглый металлический
+  // цилиндр, а не плоская закрашенная лента
+  ctx.strokeStyle = shadeColor(skin.barrel, 0.55 * shade);
+  ctx.lineWidth = Math.max(1, muzzleWidth * 0.12);
+  ctx.beginPath();
+  ctx.moveTo(xStart + taperLen * 0.6, yMid - muzzleWidth * 0.28);
+  ctx.lineTo(xStart + len - muzzleWidth * 0.3, yMid - muzzleWidth * 0.28);
+  ctx.stroke();
+
+  // пара колец-муфт вдоль ровного участка ствола — механическая деталь,
+  // без них длинный ствол читался как гладкая безликая труба
+  const ringCount = len - taperLen > width * 2.2 ? 2 : 1;
+  for (let i = 1; i <= ringCount; i++) {
+    const rx = xStart + taperLen + ((len - taperLen) * i) / (ringCount + 1);
+    ctx.fillStyle = shadeColor(skin.barrelDark, -0.25);
+    ctx.fillRect(rx - muzzleWidth * 0.06, yMid - muzzleWidth / 2 - 0.5, muzzleWidth * 0.12, muzzleWidth + 1);
+  }
 }
 
 // муфта/дульный тормоз на конце ствола — короткая утолщённая деталь с
@@ -2036,7 +2089,7 @@ export function drawTank3D(
       // стволы дальше "от камеры" (меньший cos) чуть темнее и тоньше —
       // простое псевдо-3D расслоение барабана, а не плоский набор одинаковых полос
       const depthShade = 0.4 + 0.6 * (0.5 + 0.5 * Math.cos(a));
-      drawBarrelSegment(ctx, barrelPullback, barrelLen, 3.2, skin, oy - 1.6, depthShade);
+      drawBarrelSegment(ctx, barrelPullback, barrelLen, 3.2, skin, oy - 1.6, depthShade, false);
 
       // искра на дульном срезе того ствола, что сейчас проходит через ось
       // стрельбы (верхняя точка вращения) — только пока идёт активная
