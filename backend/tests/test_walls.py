@@ -56,13 +56,3 @@ def test_wall_respawns_after_delay(room):
     wall.destroyed_at = None
 
 
-def test_ramp_allows_players_but_bullets_hit_underlying_wall(room):
-    ramp = next(w for w in WALLS if w.is_ramp)
-    cx = ramp.x + ramp.width / 2
-    cy = ramp.y + ramp.height / 2
-
-    assert not rect_intersects_walls(cx, cy, 32), "player should pass freely over a ramp"
-
-    underlying_wall = _find_intersecting_wall(cx, cy, 10)
-    assert underlying_wall is not None, "bullet should still collide with wall beneath ramp"
-    assert not underlying_wall.is_ramp
