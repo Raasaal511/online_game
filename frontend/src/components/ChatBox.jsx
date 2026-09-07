@@ -52,7 +52,7 @@ export default function ChatBox({ messages, playerId, myNickname, sendChat }) {
     <div style={styles.wrap}>
       <div style={styles.log} ref={listRef}>
         {messages.map((m, i) => (
-          <div key={i} style={styles.line}>
+          <div key={i} className="anim-fade-in" style={styles.line}>
             <span style={{ ...styles.nick, color: m.nickname === myNickname ? colors.accent : colors.info }}>
               {m.nickname}:
             </span>{" "}

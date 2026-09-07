@@ -1050,7 +1050,57 @@ export function drawWallHitSpark3D(ctx, hit, age) {
   ctx.fill();
 }
 
-export function drawTank3D(ctx, player, isMe, baseTankSize, t, kickback = 0, accelBoost = 0, moveAngle = null) {
+// Один сегмент ствола: объёмный цилиндр вместо плоского fillRect — тёмная
+// обводка по контуру + светлый блик вдоль верхней трети (имитирует то же
+// направленное освещение, что уже используют корпус/башня танка), и мягкая
+// тень под стволом на башне. Раньше ствол был буквально залитой полосой
+// без контура/светотени — на любом фоне читался как плоская линия, а не
+// часть объёмной модели.
+function drawBarrelSegment(ctx, xStart, len, width, skin, yOffset = -width / 2, shade = 1) {
+  const y = yOffset;
+  // контактная тень на башне под стволом
+  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  ctx.fillRect(xStart, y + width * 0.15, len, width);
+
+  const grad = ctx.createLinearGradient(0, y, 0, y + width);
+  grad.addColorStop(0, shadeColor(skin.barrel, 0.35 * shade));
+  grad.addColorStop(0.35, skin.barrel);
+  grad.addColorStop(1, shadeColor(skin.barrelDark, -0.15));
+  ctx.fillStyle = grad;
+  ctx.fillRect(xStart, y, len, width);
+
+  ctx.strokeStyle = "rgba(0,0,0,0.55)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(xStart, y, len, width);
+}
+
+// муфта/дульный тормоз на конце ствола — короткая утолщённая деталь с
+// собственным объёмным градиентом, читается как настоящая механическая
+// часть, а не просто более тёмный прямоугольник поверх линии
+function drawMuzzleCollar(ctx, xCenter, radius, skin, yOffset = 0) {
+  const grad = ctx.createRadialGradient(xCenter - 1, yOffset - 1, 0.4, xCenter, yOffset, radius);
+  grad.addColorStop(0, shadeColor(skin.turret, 0.25));
+  grad.addColorStop(1, skin.turretDark);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(xCenter, yOffset, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.5)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+export function drawTank3D(
+  ctx,
+  player,
+  isMe,
+  baseTankSize,
+  t,
+  kickback = 0,
+  accelBoost = 0,
+  moveAngle = null,
+  hideLabels = false
+) {
   const {
     turret_angle: angle,
     hp,
@@ -1289,12 +1339,9 @@ export function drawTank3D(ctx, player, isMe, baseTankSize, t, kickback = 0, acc
     // реально бьёт несколькими типами атак) + вращающийся сенсор-кольцо на
     // башне, читается как настоящая боевая машина, а не увеличенный игрок
     const barrelLen = tankSize / 2 + 10;
-    ctx.fillStyle = "#1e293b";
-    ctx.fillRect(barrelPullback, -7, barrelLen, 5);
-    ctx.fillRect(barrelPullback, 2, barrelLen, 5);
-    ctx.fillStyle = "#0f172a";
-    ctx.fillRect(barrelPullback, -5.5, barrelLen, 2.5);
-    ctx.fillRect(barrelPullback, 3.5, barrelLen, 2.5);
+    const bossSkin = { barrel: "#3f0d0d", barrelDark: "#1a0505", turret: "#7f1d1d", turretDark: "#1a0505" };
+    drawBarrelSegment(ctx, barrelPullback, barrelLen, 5, bossSkin, -7.5);
+    drawBarrelSegment(ctx, barrelPullback, barrelLen, 5, bossSkin, 2);
 
     const spinAngle = (t ?? 0) * 3;
     ctx.strokeStyle = "rgba(248, 113, 113, 0.7)";
@@ -1309,11 +1356,74 @@ export function drawTank3D(ctx, player, isMe, baseTankSize, t, kickback = 0, acc
     ctx.beginPath();
     ctx.arc(0, 0, 3, 0, Math.PI * 2);
     ctx.fill();
+  } else if (player.tank_class === "sniper") {
+    // снайпер: длинный тонкий ствол — читается как дальнобойное оружие.
+    // Объёмный (не плоский fillRect): тёмная обводка по контуру + светлый
+    // блик вдоль верхней грани, как у настоящего металлического цилиндра.
+    const barrelLen = tankSize / 2 + 20;
+    const w = 5;
+    drawBarrelSegment(ctx, barrelPullback, barrelLen, w, skin);
+    // дульный тормоз на конце — короткая утолщённая муфта
+    drawMuzzleCollar(ctx, barrelPullback + barrelLen - 3, 4.5, skin);
+  } else if (player.tank_class === "brawler") {
+    // ближний бой: двойная пушка бок о бок — короче и толще одиночного ствола
+    const barrelLen = tankSize / 2 + 4;
+    drawBarrelSegment(ctx, barrelPullback, barrelLen, 6, skin, -7.5);
+    drawBarrelSegment(ctx, barrelPullback, barrelLen, 6, skin, 1.5);
+    drawMuzzleCollar(ctx, barrelPullback + barrelLen - 2, 4, skin, -4.5);
+    drawMuzzleCollar(ctx, barrelPullback + barrelLen - 2, 4, skin, 4.5);
+  } else if (player.tank_class === "gunner") {
+    // пулемёт: вращающийся барабан из нескольких стволов (как миниган) —
+    // вращается быстрее при недавнем выстреле (используем kickback как
+    // индикатор активной стрельбы), иначе крутится медленно на холостом ходу
+    const barrelLen = tankSize / 2 + 6;
+    const spin = (t ?? 0) * (4 + kickback * 14);
+    const barrelCount = 4;
+    for (let i = 0; i < barrelCount; i++) {
+      const a = spin + (i / barrelCount) * Math.PI * 2;
+      const oy = Math.sin(a) * 4;
+      // стволы дальше "от камеры" (меньший cos) чуть темнее и тоньше —
+      // простое псевдо-3D расслоение барабана, а не плоский набор одинаковых полос
+      const depthShade = 0.4 + 0.6 * (0.5 + 0.5 * Math.cos(a));
+      drawBarrelSegment(ctx, barrelPullback, barrelLen, 3.2, skin, oy - 1.6, depthShade);
+
+      // искра на дульном срезе того ствола, что сейчас проходит через ось
+      // стрельбы (верхняя точка вращения) — только пока идёт активная
+      // стрельба (kickback>0), читается как реально стреляющий барабан,
+      // а не просто декоративно крутящиеся стволы
+      if (kickback > 0.15 && Math.cos(a) > 0.85) {
+        const sparkAlpha = kickback * (0.4 + 0.6 * Math.abs(Math.cos(a)));
+        const sparkGrad = ctx.createRadialGradient(
+          barrelPullback + barrelLen,
+          oy,
+          0,
+          barrelPullback + barrelLen,
+          oy,
+          5
+        );
+        sparkGrad.addColorStop(0, `rgba(255, 244, 214, ${sparkAlpha})`);
+        sparkGrad.addColorStop(1, `rgba(255, 200, 120, 0)`);
+        ctx.fillStyle = sparkGrad;
+        ctx.beginPath();
+        ctx.arc(barrelPullback + barrelLen, oy, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // муфта барабана у основания — скрывает точки схождения стволов, с
+    // объёмным градиентом вместо плоской заливки
+    const collarGrad = ctx.createRadialGradient(barrelPullback + 2, -2, 0.5, barrelPullback + 4, 0, 6);
+    collarGrad.addColorStop(0, skin.turret);
+    collarGrad.addColorStop(1, skin.turretDark);
+    ctx.fillStyle = collarGrad;
+    ctx.beginPath();
+    ctx.arc(barrelPullback + 4, 0, 5.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.5)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
   } else {
-    ctx.fillStyle = skin.barrel;
-    ctx.fillRect(barrelPullback, -3, tankSize / 2 + 8, 6);
-    ctx.fillStyle = skin.barrelDark;
-    ctx.fillRect(barrelPullback, -1.5, tankSize / 2 + 8, 3);
+    drawBarrelSegment(ctx, barrelPullback, tankSize / 2 + 8, 6, skin);
+    drawMuzzleCollar(ctx, barrelPullback + tankSize / 2 + 8 - 3, 4, skin);
   }
   ctx.restore();
 
@@ -1336,11 +1446,13 @@ export function drawTank3D(ctx, player, isMe, baseTankSize, t, kickback = 0, acc
   // ник и HP-бар — billboard, не наклоняются вместе с полом. Уровень раньше
   // был вписан прямо в текст ника ("Lv.3 Rasl") и сливался с ним визуально —
   // теперь отдельная маленькая золотистая строка НАД ником, всегда видна
-  // отдельно от имени начиная со 2 уровня.
+  // отдельно от имени начиная со 2 уровня. hideLabels скрывает весь этот
+  // HUD-слой целиком — используется для косметического превью танка в меню
+  // (там нет ни ника, ни HP, ни уровня — это не настоящий игрок)
   const nameLabel = isMiniboss ? `☠ ${player.nickname}` : player.nickname;
   const nameY = topY - half - 14;
 
-  if (!isMiniboss && level > 1) {
+  if (!hideLabels && !isMiniboss && level > 1) {
     ctx.fillStyle = "#fde047";
     ctx.font = "bold 10px sans-serif";
     ctx.textAlign = "center";
@@ -1349,28 +1461,30 @@ export function drawTank3D(ctx, player, isMe, baseTankSize, t, kickback = 0, acc
     ctx.fillText(`★ Уровень ${level}`, x, nameY - 12);
   }
 
-  ctx.fillStyle = isMiniboss ? "#fecaca" : "white";
-  ctx.font = isMiniboss ? "bold 13px sans-serif" : "11px sans-serif";
-  ctx.textAlign = "center";
-  ctx.shadowColor = "rgba(0,0,0,0.8)";
-  ctx.shadowBlur = 3;
-  ctx.fillText(nameLabel, x, nameY);
+  if (!hideLabels) {
+    ctx.fillStyle = isMiniboss ? "#fecaca" : "white";
+    ctx.font = isMiniboss ? "bold 13px sans-serif" : "11px sans-serif";
+    ctx.textAlign = "center";
+    ctx.shadowColor = "rgba(0,0,0,0.8)";
+    ctx.shadowBlur = 3;
+    ctx.fillText(nameLabel, x, nameY);
 
-  const barWidth = isMiniboss ? tankSize * 1.6 : tankSize;
-  const barHeight = isMiniboss ? 7 : 5;
-  const hpRatio = Math.max(0, hp / maxHp);
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = "#334155";
-  ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth, barHeight);
-  ctx.fillStyle = isMiniboss ? "#dc2626" : hpRatio > 0.3 ? "#22c55e" : "#ef4444";
-  ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth * hpRatio, barHeight);
-  ctx.shadowColor = "transparent";
+    const barWidth = isMiniboss ? tankSize * 1.6 : tankSize;
+    const barHeight = isMiniboss ? 7 : 5;
+    const hpRatio = Math.max(0, hp / maxHp);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#334155";
+    ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth, barHeight);
+    ctx.fillStyle = isMiniboss ? "#dc2626" : hpRatio > 0.3 ? "#22c55e" : "#ef4444";
+    ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth * hpRatio, barHeight);
+    ctx.shadowColor = "transparent";
+  }
 
   // указатель "это я" сразу после респавна — на большой карте с 10 танками
   // одинакового вида сложно быстро найти себя глазами; пока действует
   // неуязвимость (spawn protection), над своим танком висит заметная
   // подпрыгивающая стрелка — единственный явный сигнал "ты здесь"
-  if (isMe && hasSpawnProtection) {
+  if (!hideLabels && isMe && hasSpawnProtection) {
     const bob = Math.sin((t ?? 0) * 6) * 5;
     const arrowY = nameY - 34 + bob;
     ctx.save();

@@ -257,6 +257,27 @@ export function playUltimateFireSound() {
   }
 }
 
+export function playRoundEndFanfare() {
+  // короткая победная мелодия (арпеджио вверх) вместо одного тона — раунд
+  // это редкое значимое событие (раз в 10 минут), заслуживает более
+  // праздничного звука, чем обычные игровые сигналы
+  try {
+    const notes = [523.25, 659.25, 783.99, 1046.5]; // C5 E5 G5 C6
+    notes.forEach((freq, i) => {
+      setTimeout(() => {
+        try {
+          playTone({ freq, duration: 0.35, type: "triangle", volume: 0.18 });
+          playTone({ freq: freq * 2, duration: 0.2, type: "sine", volume: 0.06 });
+        } catch (e) {
+          /* ignore */
+        }
+      }, i * 110);
+    });
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 export function unlockAudio() {
   try {
     getCtx();

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-// Shift — телепорт в направлении текущего прицела, F — ульта (готовность
+// Shift — телепорт в направлении текущего прицела, Пробел — ульта (готовность
 // сервер проверяет сам, здесь просто шлём намерение по нажатию клавиши)
 export function useActionKeys(onTeleport, onUltimate) {
   useEffect(() => {
@@ -11,7 +11,8 @@ export function useActionKeys(onTeleport, onUltimate) {
       if (isTypingTarget(e.target)) return;
       if (e.code === "ShiftLeft" || e.code === "ShiftRight") {
         onTeleport();
-      } else if (e.code === "KeyF") {
+      } else if (e.code === "Space") {
+        e.preventDefault(); // пробел по умолчанию скроллит страницу/жмёт фокусную кнопку
         onUltimate();
       }
     };

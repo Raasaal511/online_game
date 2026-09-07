@@ -3,10 +3,32 @@ import NicknameForm from "./components/NicknameForm.jsx";
 import GameCanvas from "./components/GameCanvas.jsx";
 import Leaderboard from "./components/Leaderboard.jsx";
 import ChatBox from "./components/ChatBox.jsx";
+import Confetti from "./components/Confetti.jsx";
+import { playRoundEndFanfare } from "./game/sound.js";
 import { useGameSocket } from "./hooks/useGameSocket.js";
 import { useKeyboardInput } from "./hooks/useKeyboardInput.js";
 import { colors, panel, fontFamily } from "./ui/theme.js";
 import { TANK_CLASSES } from "./game/tankClasses.js";
+import {
+  IconCrosshair,
+  IconSkull,
+  IconSword,
+  IconStar,
+  IconShield,
+  IconBolt,
+  IconWind,
+  IconSnail,
+  IconGun,
+  IconFlame,
+  IconTarget,
+  IconRocket,
+  IconRadiation,
+  IconCrown,
+  IconFlagCheckered,
+  IconTrophy,
+  IconWarning,
+  IconBurst,
+} from "./ui/icons.jsx";
 
 const WEAPON_LABELS = {
   cannon: "Пушка",
@@ -16,10 +38,10 @@ const WEAPON_LABELS = {
 };
 
 const WEAPON_ICONS = {
-  cannon: "🎯",
-  minigun: "🔫",
-  flamethrower: "🔥",
-  rocket: "🚀",
+  cannon: <IconTarget />,
+  minigun: <IconGun />,
+  flamethrower: <IconFlame />,
+  rocket: <IconRocket />,
 };
 
 let bannerIdCounter = 0;
@@ -72,9 +94,18 @@ export default function App() {
     [sendSelectClass]
   );
 
-  const pushBanner = useCallback((text, kind, duration = 3000) => {
+  // groupKey: если указан, убирает предыдущие баннеры с тем же ключом перед
+  // добавлением нового — без этого два level_up подряд (миниган позволяет
+  // набрать 2 килла за секунды, оба поднимают уровень) показывались
+  // ОДНОВРЕМЕННО как "Уровень 2!" и "Уровень 3!" друг под другом, что
+  // читалось как баг ("два уровня разом"), хотя каждое событие само по себе
+  // корректно — просто предыдущий баннер не успевал исчезнуть
+  const pushBanner = useCallback((text, kind, duration = 3000, groupKey = null) => {
     const id = ++bannerIdCounter;
-    setBanners((prev) => [...prev, { id, text, kind }]);
+    setBanners((prev) => {
+      const filtered = groupKey ? prev.filter((b) => b.groupKey !== groupKey) : prev;
+      return [...filtered, { id, text, kind, groupKey }];
+    });
     setTimeout(() => {
       setBanners((prev) => prev.filter((b) => b.id !== id));
     }, duration);
@@ -83,13 +114,34 @@ export default function App() {
   const handleGameEvent = useCallback(
     (event) => {
       if (event.type === "nuke_warning") {
-        pushBanner("☢️ ЯДЕРНЫЙ УДАР! ПОКИНЬ ЗОНУ ВЗРЫВА!", "danger", 6000);
+        pushBanner(
+          <>
+            <IconRadiation /> ЯДЕРНЫЙ УДАР! ПОКИНЬ ЗОНУ ВЗРЫВА!
+          </>,
+          "danger",
+          6000
+        );
       } else if (event.type === "miniboss_spawn") {
-        pushBanner(`☠️ Мини-босс ${event.owner} появился на карте! Убей его — получишь мощный супер-бонус!`, "warning", 4500);
+        pushBanner(
+          <>
+            <IconSkull /> Мини-босс {event.owner} появился на карте! Убей его — получишь мощный
+            супер-бонус!
+          </>,
+          "warning",
+          4500
+        );
       } else if (event.type === "level_up") {
-        pushBanner(`⭐ Уровень ${event.level}!`, "success", 2500);
+        pushBanner(
+          <>
+            <IconStar /> Уровень {event.level}!
+          </>,
+          "success",
+          2500,
+          "level_up"
+        );
       } else if (event.type === "round_end") {
         setRoundWinner(event.winner);
+        playRoundEndFanfare();
       }
     },
     [pushBanner]
@@ -120,7 +172,9 @@ export default function App() {
     return (
       <div style={styles.page}>
         <div style={overlayStyles.box2}>
-          <div style={styles.badge}>⚠️ КОМНАТА ЗАПОЛНЕНА</div>
+          <div style={styles.badge}>
+            <IconWarning /> КОМНАТА ЗАПОЛНЕНА
+          </div>
           <h2 style={styles.h2}>Все места заняты</h2>
           <p style={styles.p}>Сейчас играет максимум игроков (10/10). Попробуй зайти чуть позже.</p>
         </div>
@@ -145,7 +199,15 @@ export default function App() {
           {connected ? "Онлайн" : "Подключение..."}
         </span>
         {typeof state.round_time_left === "number" && (
-          <span style={styles.roundTimer}>⏱ {formatRoundTime(state.round_time_left)}</span>
+          <span
+            className={state.round_time_left <= 60 ? "anim-chip-pulse" : ""}
+            style={{
+              ...styles.roundTimer,
+              ...(state.round_time_left <= 60 ? styles.roundTimerUrgent : null),
+            }}
+          >
+            <IconFlagCheckered /> {formatRoundTime(state.round_time_left)}
+          </span>
         )}
         {me && (
           <div style={styles.hpGroup}>
@@ -159,9 +221,17 @@ export default function App() {
               />
             </div>
             <span style={styles.hpText}>{me.hp}/{me.max_hp}</span>
-            {me.level > 1 && <span style={styles.levelChip}>⭐ Lv.{me.level}</span>}
-            <span style={styles.statChip}>⚔️ {me.kills}</span>
-            <span style={styles.statChip}>💀 {me.deaths}</span>
+            {me.level > 1 && (
+              <span style={styles.levelChip}>
+                <IconStar /> Lv.{me.level}
+              </span>
+            )}
+            <span style={styles.statChip}>
+              <IconSword /> {me.kills}
+            </span>
+            <span style={styles.statChip}>
+              <IconSkull /> {me.deaths}
+            </span>
             {me.weapon && me.weapon !== "cannon" && (
               <span style={styles.weaponChip}>
                 {WEAPON_ICONS[me.weapon]} {WEAPON_LABELS[me.weapon] || me.weapon}
@@ -170,26 +240,52 @@ export default function App() {
             {/* индикаторы всех одновременно активных баффов — раньше подбор
                 armor+damage одновременно был невозможно отличить визуально
                 от одного эффекта, казалось что "работает только один" */}
-            {me.has_super && <span style={styles.buffChip}>💎 Супер</span>}
-            {!me.has_super && me.has_armor && <span style={styles.buffChip}>🛡️ Броня</span>}
-            {!me.has_super && me.has_damage_boost && <span style={styles.buffChip}>💢 Урон</span>}
-            {!me.has_super && me.has_speed_boost && <span style={styles.buffChip}>💨 Скорость</span>}
-            {me.has_slow && <span style={styles.debuffChip}>🐌 Замедление</span>}
+            {me.has_super && (
+              <span style={styles.buffChip}>
+                <IconStar /> Супер
+              </span>
+            )}
+            {!me.has_super && me.has_armor && (
+              <span style={styles.buffChip}>
+                <IconShield /> Броня
+              </span>
+            )}
+            {!me.has_super && me.has_damage_boost && (
+              <span style={styles.buffChip}>
+                <IconSword /> Урон
+              </span>
+            )}
+            {!me.has_super && me.has_speed_boost && (
+              <span style={styles.buffChip}>
+                <IconWind /> Скорость
+              </span>
+            )}
+            {me.has_slow && (
+              <span style={styles.debuffChip}>
+                <IconSnail /> Замедление
+              </span>
+            )}
             {me.tank_class === "gunner" && (
               <span style={styles.statChip}>
-                🔫 {me.reloading ? "перезарядка..." : `${me.ammo}/${me.ammo_max}`}
+                <IconGun /> {me.reloading ? "перезарядка..." : `${me.ammo}/${me.ammo_max}`}
               </span>
             )}
             <span
+              title="Телепорт — Shift"
+              className={me.teleport_cooldown > 0 ? "" : "anim-chip-pulse"}
               style={{
                 ...styles.statChip,
                 ...(me.teleport_cooldown > 0 ? null : styles.readyChip),
               }}
             >
-              ⚡ {me.teleport_cooldown > 0 ? `${me.teleport_cooldown}с` : "Готово"}
+              <IconBolt /> {me.teleport_cooldown > 0 ? `${me.teleport_cooldown}с` : "Готово"}
             </span>
-            <span style={{ ...styles.statChip, ...(me.ultimate_ready ? styles.readyChip : null) }}>
-              🔥 {me.ultimate_ready ? "УЛЬТА ГОТОВА" : `${me.ultimate_kills}/5`}
+            <span
+              title="Ульта — Пробел"
+              className={me.ultimate_ready ? "anim-chip-pulse" : ""}
+              style={{ ...styles.statChip, ...(me.ultimate_ready ? styles.readyChip : null) }}
+            >
+              <IconFlame /> {me.ultimate_ready ? "УЛЬТА ГОТОВА (Пробел)" : `${me.ultimate_kills}/5`}
             </span>
           </div>
         )}
@@ -218,14 +314,18 @@ export default function App() {
                 игроков/чат) вынесены за пределы арены в боковую колонку ниже */}
             {miniboss && me && <MinibossCompass me={me} boss={miniboss} />}
 
+            {roundWinner?.nickname && <Confetti />}
+
             {roundWinner && (
-              <div style={overlayStyles.roundBanner}>
-                <div style={overlayStyles.roundBannerTitle}>🏁 Раунд окончен</div>
+              <div className="anim-banner-pop" style={overlayStyles.roundBanner}>
+                <div style={overlayStyles.roundBannerTitle}>
+                  <IconFlagCheckered /> Раунд окончен
+                </div>
                 <div style={overlayStyles.roundBannerText}>
                   {roundWinner.nickname ? (
                     <>
-                      👑 <strong>{roundWinner.nickname}</strong> — самый крутой! ({roundWinner.kills}{" "}
-                      убийств)
+                      <IconCrown /> <strong>{roundWinner.nickname}</strong> — самый крутой! (
+                      {roundWinner.kills} убийств)
                     </>
                   ) : (
                     "Никто не набрал убийств — ничья"
@@ -238,7 +338,11 @@ export default function App() {
             {banners.length > 0 && (
               <div style={overlayStyles.bannerStack}>
                 {banners.map((b) => (
-                  <div key={b.id} style={{ ...overlayStyles.banner, ...overlayStyles[`banner_${b.kind}`] }}>
+                  <div
+                    key={b.id}
+                    className="anim-banner-pop"
+                    style={{ ...overlayStyles.banner, ...overlayStyles[`banner_${b.kind}`] }}
+                  >
                     {b.text}
                   </div>
                 ))}
@@ -247,8 +351,10 @@ export default function App() {
 
             {deathInfo && (
               <div style={overlayStyles.backdrop}>
-                <div style={overlayStyles.box}>
-                  <div style={styles.badge}>💥 ТАНК УНИЧТОЖЕН</div>
+                <div className="anim-banner-pop" style={overlayStyles.box}>
+                  <div style={styles.badge}>
+                    <IconBurst /> ТАНК УНИЧТОЖЕН
+                  </div>
                   <h2 style={styles.h2}>Ты погиб</h2>
                   <div style={overlayStyles.statsRow}>
                     <div style={overlayStyles.stat}>
@@ -271,7 +377,6 @@ export default function App() {
                           ...(tankClass === c.id ? overlayStyles.respawnClassCardActive : null),
                         }}
                       >
-                        <div>{c.icon}</div>
                         <div style={{ fontSize: "11px" }}>{c.name}</div>
                       </button>
                     ))}
@@ -317,7 +422,9 @@ function MinibossCompass({ me, boss }) {
       >
         ➤
       </div>
-      <span style={overlayStyles.compassLabel}>☠️ {dist}м</span>
+      <span style={overlayStyles.compassLabel}>
+        <IconSkull /> {dist}м
+      </span>
     </div>
   );
 }
@@ -329,23 +436,32 @@ function ScoreBoard({ players, playerId }) {
         Игроки ({players.length}/10)
       </h3>
       <ol style={{ listStyle: "none", padding: 0, margin: 0, fontSize: "13px" }}>
-        {players.map((p) => (
+        {players.map((p, i) => (
           <li
             key={p.id}
             style={{
               display: "flex",
               justifyContent: "space-between",
+              alignItems: "center",
               gap: "12px",
-              padding: "3px 0",
+              padding: "4px 6px",
+              borderRadius: "6px",
+              background: p.id === playerId ? colors.accentSoft : "transparent",
               color: p.id === playerId ? colors.accent : colors.text,
               fontWeight: p.id === playerId ? 700 : 400,
+              transition: "background 0.2s ease",
             }}
           >
-            <span>
-              {p.level > 1 && <span style={{ color: colors.warning }}>Lv.{p.level} </span>}
-              {p.nickname}
+            <span style={{ display: "flex", alignItems: "center", gap: "4px", minWidth: 0 }}>
+              {i === 0 && p.kills > 0 && <IconCrown style={{ color: "#facc15", flexShrink: 0 }} />}
+              {p.level > 1 && <span style={{ color: colors.warning }}>Lv.{p.level}</span>}
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {p.nickname}
+              </span>
             </span>
-            <span>{p.kills}K / {p.deaths}D</span>
+            <span style={{ flexShrink: 0 }}>
+              {p.kills}K / {p.deaths}D
+            </span>
           </li>
         ))}
       </ol>
@@ -440,7 +556,7 @@ const styles = {
     background: "rgba(255,255,255,0.08)",
     overflow: "hidden",
   },
-  hpBarFill: { height: "100%", borderRadius: "4px", transition: "width 0.2s ease" },
+  hpBarFill: { height: "100%", borderRadius: "4px", transition: "width 0.2s ease, background 0.3s ease" },
   hpText: { fontSize: "13px", color: colors.text, minWidth: "50px" },
   statChip: {
     fontSize: "13px",
@@ -493,6 +609,11 @@ const styles = {
     background: "rgba(255,255,255,0.06)",
     padding: "2px 10px",
     borderRadius: "6px",
+    transition: "background 0.3s ease, color 0.3s ease",
+  },
+  roundTimerUrgent: {
+    color: "#fef2f2",
+    background: colors.danger,
   },
 };
 

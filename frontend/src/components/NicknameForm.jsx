@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { colors, panel, fontFamily } from "../ui/theme.js";
 import { TANK_CLASSES, GUN_SKINS } from "../game/tankClasses.js";
+import TankPreview from "./TankPreview.jsx";
+import { IconSword } from "../ui/icons.jsx";
 
 export default function NicknameForm({ onSubmit }) {
   const [value, setValue] = useState("");
@@ -19,7 +21,9 @@ export default function NicknameForm({ onSubmit }) {
   return (
     <div style={styles.page}>
       <form onSubmit={handleSubmit} style={styles.form}>
-        <div style={styles.badge}>⚔️ TANK ARENA</div>
+        <div style={styles.badge}>
+          <IconSword /> TANK ARENA
+        </div>
         <h1 style={styles.title}>Dodge Game</h1>
         <p style={styles.subtitle}>
           Управляй танком, уничтожай соперников и удерживай вершину рейтинга.
@@ -35,6 +39,10 @@ export default function NicknameForm({ onSubmit }) {
           autoFocus
         />
 
+        <div style={styles.previewBox}>
+          <TankPreview tankClass={tankClass} gunSkin={gunSkin} />
+        </div>
+
         <div style={styles.classGrid}>
           {TANK_CLASSES.map((c) => (
             <button
@@ -46,7 +54,6 @@ export default function NicknameForm({ onSubmit }) {
                 ...(tankClass === c.id ? styles.classCardActive : null),
               }}
             >
-              <div style={styles.classIcon}>{c.icon}</div>
               <div style={styles.className}>{c.name}</div>
               <div style={styles.classDesc}>{c.desc}</div>
             </button>
@@ -81,15 +88,19 @@ export default function NicknameForm({ onSubmit }) {
             <span style={styles.controlText}>движение</span>
           </div>
           <div style={styles.controlRow}>
-            <span style={styles.keyChip}>Мышь</span>
-            <span style={styles.controlText}>прицел и стрельба (ЛКМ)</span>
+            <span style={styles.keyChip}>ЛКМ</span>
+            <span style={styles.controlText}>стрельба оружием класса</span>
+          </div>
+          <div style={styles.controlRow}>
+            <span style={styles.keyChip}>ПКМ</span>
+            <span style={styles.controlText}>подобранное оружие с карты (доп. к классу)</span>
           </div>
           <div style={styles.controlRow}>
             <span style={styles.keyChip}>Shift</span>
             <span style={styles.controlText}>телепорт в направлении прицела</span>
           </div>
           <div style={styles.controlRow}>
-            <span style={styles.keyChip}>F</span>
+            <span style={styles.keyChip}>Пробел</span>
             <span style={styles.controlText}>ульта (копится за 5 убийств)</span>
           </div>
           <div style={styles.controlRow}>
@@ -104,23 +115,39 @@ export default function NicknameForm({ onSubmit }) {
 
 const styles = {
   page: {
-    minHeight: "100vh",
+    height: "100vh",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     background:
       "radial-gradient(circle at 50% 20%, #1e293b 0%, #0f172a 55%, #060a14 100%)",
     fontFamily,
+    boxSizing: "border-box",
+    // страница никогда не скроллит целиком — если контенту не хватает
+    // высоты (маленький экран), скроллит сама форма, а не body/html
+    overflow: "hidden",
+    padding: "16px",
   },
   form: {
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
-    gap: "14px",
-    width: "340px",
-    padding: "40px 32px",
+    gap: "10px",
+    width: "480px",
+    maxHeight: "100%",
+    overflowY: "auto",
+    padding: "24px 32px",
     textAlign: "center",
+    boxSizing: "border-box",
     ...panel,
+  },
+  previewBox: {
+    width: "100%",
+    borderRadius: "10px",
+    overflow: "hidden",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: colors.panelBorder,
   },
   badge: {
     fontSize: "12px",

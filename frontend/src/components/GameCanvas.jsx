@@ -127,6 +127,8 @@ export default function GameCanvas({
   const motionSmoothRef = useRef(new Map()); // playerId -> {emaSpeed, dirX, dirY} — EMA для эффекта разгона
   const laserChargingRef = useRef(new Set()); // playerId'ы, у которых лазер уже заряжался в прошлом кадре
   const laserShotsRef = useRef([]); // {x, y, angle, range, age} — вспышки фактических выстрелов лазера
+  const lastMyHpRef = useRef(null); // отслеживаем свой HP между тиками — красная виньетка при уроне
+  const hitFlashRef = useRef(0); // 0..1, затухающая яркость красной виньетки при получении урона
   const teleportEffectsRef = useRef([]); // {x, y, age} — вспышка появления после телепорта
   const hadNukeRef = useRef(false); // была ли ядерка активна в прошлом кадре (для звука появления)
   // сервер шлёт state 30 раз/сек, а draw() вызывается на каждый requestAnimationFrame
@@ -145,10 +147,20 @@ export default function GameCanvas({
 
   const handleShoot = () => {
     unlockAudio();
-    sendShoot();
+    sendShoot(false);
   };
 
-  const { mouseRef, isFiringRef } = useMouseAim(canvasRef, () => {}, handleShoot);
+  const handleShootPickup = () => {
+    unlockAudio();
+    sendShoot(true);
+  };
+
+  const { mouseRef, isFiringRef, isFiringPickupRef } = useMouseAim(
+    canvasRef,
+    () => {},
+    handleShoot,
+    handleShootPickup
+  );
   const shakeRef = useRef({ magnitude: 0 });
 
   const handleTeleport = () => {
@@ -168,6 +180,7 @@ export default function GameCanvas({
     let animationFrame;
     let lastAimSent = 0;
     let lastAutoShotAt = 0;
+    let lastAutoShotPickupAt = 0;
     let lastTime = performance.now();
 
     const draw = (timestamp) => {
@@ -283,6 +296,23 @@ export default function GameCanvas({
         }
         knownAliveState.current.set(p.id, p.alive);
       }
+
+      // мой HP уменьшился между тиками -> красная виньетка по краям экрана —
+      // ощутимый тактильный фидбэк "по тебе попали", раньше единственным
+      // сигналом был числовой HP-бар в HUD, легко не заметить в горячке боя
+      if (isNewTick) {
+        const myPlayer = current.players?.find((p) => p.id === playerId);
+        if (myPlayer && myPlayer.alive) {
+          if (lastMyHpRef.current !== null && myPlayer.hp < lastMyHpRef.current) {
+            const dmg = lastMyHpRef.current - myPlayer.hp;
+            hitFlashRef.current = Math.min(1, hitFlashRef.current + 0.3 + dmg / 100);
+          }
+          lastMyHpRef.current = myPlayer.hp;
+        } else if (myPlayer && !myPlayer.alive) {
+          lastMyHpRef.current = null;
+        }
+      }
+      hitFlashRef.current = Math.max(0, hitFlashRef.current - dt * 2.5);
 
       // дроп исчез (кто-то подобрал) -> звук
       const seenPickupIds = new Set();
@@ -497,17 +527,25 @@ export default function GameCanvas({
         }
       }
 
-      // автоматическое оружие (пулемёт/огнемёт) стреляет непрерывно, пока
-      // зажата ЛКМ — базовый одиночный выстрел остаётся по клику (в useMouseAim)
+      // автоматическое оружие класса (пулемёт стреляет очень быстро) —
+      // непрерывно по зажатой ЛКМ, базовый одиночный выстрел по клику уже
+      // обработан в useMouseAim
+      if (me && me.alive && isFiringRef.current && me.tank_class === "gunner" && timestamp - lastAutoShotAt > 60) {
+        lastAutoShotAt = timestamp;
+        sendShoot(false);
+      }
+
+      // подобранный с карты пикап (пулемёт/огнемёт) — ДОПОЛНИТЕЛЬНЫЙ режим
+      // атаки по зажатой ПКМ, независимо от класса и от того, что делает ЛКМ
       if (
         me &&
         me.alive &&
-        isFiringRef.current &&
+        isFiringPickupRef.current &&
         (me.weapon === "minigun" || me.weapon === "flamethrower") &&
-        timestamp - lastAutoShotAt > 90
+        timestamp - lastAutoShotPickupAt > 90
       ) {
-        lastAutoShotAt = timestamp;
-        sendShoot();
+        lastAutoShotPickupAt = timestamp;
+        sendShoot(true);
       }
 
       // screen-shake: короткий импульс при попадании/взрыве, затухает со временем
@@ -692,6 +730,24 @@ export default function GameCanvas({
       drawParticles3D(ctx, particles.getParticles());
 
       ctx.restore();
+
+      // красная виньетка урона — рисуется ПОСЛЕ restore(), не подвержена
+      // screen-shake трансформации (виньетка привязана к экрану, не к миру)
+      if (hitFlashRef.current > 0.01) {
+        const vignette = ctx.createRadialGradient(
+          canvas.width / 2,
+          canvas.height / 2,
+          Math.min(canvas.width, canvas.height) * 0.32,
+          canvas.width / 2,
+          canvas.height / 2,
+          Math.max(canvas.width, canvas.height) * 0.62
+        );
+        const alpha = hitFlashRef.current * 0.55;
+        vignette.addColorStop(0, "rgba(220, 38, 38, 0)");
+        vignette.addColorStop(1, `rgba(220, 38, 38, ${alpha})`);
+        ctx.fillStyle = vignette;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
 
       animationFrame = requestAnimationFrame(draw);
     };

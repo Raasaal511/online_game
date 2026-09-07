@@ -101,10 +101,10 @@ export function useGameSocket(nickname, tankClass = "gunner", gunSkin = "steel")
     }
   }, []);
 
-  const sendShoot = useCallback(() => {
+  const sendShoot = useCallback((usePickup = false) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "shoot" }));
+      ws.send(JSON.stringify({ type: "shoot", use_pickup: usePickup }));
     }
   }, []);
 

@@ -51,7 +51,7 @@ async def game_ws(
             elif msg_type == "aim":
                 game_room.set_aim(player.id, float(data.get("angle", 0)))
             elif msg_type == "shoot":
-                game_room.try_shoot(player.id)
+                game_room.try_shoot(player.id, bool(data.get("use_pickup", False)))
             elif msg_type == "teleport":
                 game_room.try_teleport(player.id, float(data.get("angle", 0)))
             elif msg_type == "ultimate":

@@ -73,8 +73,8 @@ DT = 1.0 / TICK_RATE
 
 MAX_PLAYERS = 10
 
-PICKUP_MAX_COUNT = 5
-PICKUP_SPAWN_INTERVAL = 8.0
+PICKUP_MAX_COUNT = 7  # больше предметов на карте одновременно — раньше жаловались, что пикапы (особенно оружие) появляются редко
+PICKUP_SPAWN_INTERVAL = 5.0
 PICKUP_KINDS = ["heal", "armor", "damage", "speed", "minigun", "flamethrower", "rocket"]
 ARMOR_DURATION = 12.0
 ARMOR_REDUCTION = 0.5  # снижение получаемого урона на 50%
@@ -376,10 +376,35 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin):
         for wall in WALLS:
             if wall.destroyed_at is None:
                 continue
-            if now - wall.destroyed_at >= WALL_RESPAWN_DELAY:
-                wall.destroyed_at = None
-                wall.hp = WALL_MAX_HP
-                self._wall_restores.append({"id": wall.id, "x": wall.x, "y": wall.y})
+            if now - wall.destroyed_at < WALL_RESPAWN_DELAY:
+                continue
+            # не восстанавливаем стену прямо под танком: игрок физически
+            # застрявший внутри геометрии активной стены оказывался в
+            # сломанном состоянии — исходящие пули покидали стену раньше,
+            # чем срабатывала проверка коллизии (стреляет нормально), а
+            # входящие пули соперников гасли об эту же стену РАНЬШЕ, чем
+            # долетали до игрока внутри неё (в него невозможно попасть).
+            # Просто откладываем восстановление до следующего тика, пока
+            # зона не освободится — не телепортируем и не убиваем игрока.
+            if self._wall_zone_occupied(wall):
+                continue
+            wall.destroyed_at = None
+            wall.hp = WALL_MAX_HP
+            self._wall_restores.append({"id": wall.id, "x": wall.x, "y": wall.y})
+
+    def _wall_zone_occupied(self, wall) -> bool:
+        for player in self.players.values():
+            if not player.alive:
+                continue
+            half = player.size / 2
+            if (
+                player.x - half < wall.right
+                and player.x + half > wall.x
+                and player.y - half < wall.bottom
+                and player.y + half > wall.y
+            ):
+                return True
+        return False
 
     def _apply_damage(self, player: Player, damage: int, killer_id: str) -> None:
         now = time.monotonic()

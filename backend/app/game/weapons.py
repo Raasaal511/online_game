@@ -86,22 +86,29 @@ class WeaponMixin:
     room.py не разрастался дальше, но логика не тронута — только перемещена.
     """
 
-    def try_shoot(self, player_id: str) -> None:
+    def try_shoot(self, player_id: str, use_pickup: bool = False) -> None:
         player = self.players.get(player_id)
         if player is None or not player.alive:
             return
         now = time.monotonic()
 
-        # временный weapon-пикап с карты (minigun/flamethrower/rocket) имеет
-        # приоритет над базовым оружием класса танка — так же, как раньше
-        # переопределял "cannon"; постоянное оружие класса — это то, что
-        # остаётся ПОСЛЕ истечения пикапа, а не сам пикап
+        # подобранное оружие с карты (minigun/flamethrower/rocket) — ДОПОЛНИТЕЛЬНЫЙ
+        # режим атаки поверх постоянного оружия класса, а не замена: класс
+        # продолжает стрелять как обычно по основной кнопке (ЛКМ), а пикап
+        # доступен отдельно по use_pickup=True (ПКМ) пока не истёк weapon_until.
+        # Раньше пикап временно ПОДМЕНЯЛ оружие класса целиком — так игрок на
+        # время терял свой снайпер/ближний бой/пулемёт вместо усиления им.
         pickup_active = now < player.weapon_until and player.weapon in (
             "minigun",
             "flamethrower",
             "rocket",
         )
-        weapon = player.weapon if pickup_active else "class"
+        if use_pickup:
+            if not pickup_active:
+                return
+            weapon = player.weapon
+        else:
+            weapon = "class"
 
         if weapon == "class":
             cooldown = _CLASS_COOLDOWN.get(player.tank_class, GUNNER_COOLDOWN)

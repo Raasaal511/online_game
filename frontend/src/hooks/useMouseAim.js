@@ -1,12 +1,15 @@
 import { useEffect, useRef } from "react";
 
-export function useMouseAim(canvasRef, onAim, onShoot) {
+export function useMouseAim(canvasRef, onAim, onShoot, onShootPickup) {
   const mouseRef = useRef({ x: 0, y: 0 });
-  // держим ли зажатой ЛКМ — нужно для автоматического оружия (пулемёт/огнемёт),
-  // которое должно стрелять непрерывно, пока кнопка удерживается
+  // держим ли зажатой ЛКМ/ПКМ — нужно для автоматического оружия
+  // (пулемёт/огнемёт класса или подобранного), стреляющего непрерывно
   const isFiringRef = useRef(false);
+  const isFiringPickupRef = useRef(false);
   const onShootRef = useRef(onShoot);
   onShootRef.current = onShoot;
+  const onShootPickupRef = useRef(onShootPickup);
+  onShootPickupRef.current = onShootPickup;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -31,12 +34,19 @@ export function useMouseAim(canvasRef, onAim, onShoot) {
       if (e.button === 0) {
         isFiringRef.current = true;
         onShootRef.current();
+      } else if (e.button === 2) {
+        // ПКМ — подобранный с карты пикап (ракета/огнемёт/пулемёт) как
+        // ДОПОЛНИТЕЛЬНЫЙ режим атаки, ЛКМ по-прежнему стреляет оружием класса
+        isFiringPickupRef.current = true;
+        onShootPickupRef.current?.();
       }
     };
 
     const handlePointerUp = (e) => {
       if (e.button === 0) {
         isFiringRef.current = false;
+      } else if (e.button === 2) {
+        isFiringPickupRef.current = false;
       }
     };
 
@@ -57,5 +67,5 @@ export function useMouseAim(canvasRef, onAim, onShoot) {
     };
   }, [canvasRef]);
 
-  return { mouseRef, isFiringRef };
+  return { mouseRef, isFiringRef, isFiringPickupRef };
 }

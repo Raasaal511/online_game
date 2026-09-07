@@ -18,7 +18,7 @@ def test_minigun_fires_and_damages_target(room):
     p1.turret_angle = 0.0
 
     hp_before = p2.hp
-    room.try_shoot(p1.id)
+    room.try_shoot(p1.id, use_pickup=True)
     assert len(room.bullets) == 1
     bullet = list(room.bullets.values())[0]
     assert bullet.kind == "minigun"
@@ -44,7 +44,7 @@ def test_rocket_deals_splash_damage(room):
     p1.weapon_until = now + 30
     p1.turret_angle = 0.0
 
-    room.try_shoot(p1.id)
+    room.try_shoot(p1.id, use_pickup=True)
     assert len(room.bullets) == 1
     assert list(room.bullets.values())[0].kind == "rocket"
 
@@ -73,11 +73,11 @@ async def test_flamethrower_deals_cone_damage_and_burn_dot(room):
     p1.turret_angle = 0.0
 
     hp_before = p2.hp
-    room.try_shoot(p1.id)
+    room.try_shoot(p1.id, use_pickup=True)
     assert len(room.bullets) == 0, "flamethrower should not create projectiles"
 
     for _ in range(3):
-        room.try_shoot(p1.id)
+        room.try_shoot(p1.id, use_pickup=True)
         room._tick()
         await asyncio.sleep(0)
 
