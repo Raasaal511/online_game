@@ -191,3 +191,11 @@ export function IconWarning(props) {
     </svg>
   );
 }
+
+export function IconPlay(props) {
+  return (
+    <svg viewBox="0 0 24 24" style={base} fill="currentColor" {...props}>
+      <path d="M6 4.5v15l14-7.5-14-7.5Z" />
+    </svg>
+  );
+}

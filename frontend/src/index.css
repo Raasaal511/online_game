@@ -87,3 +87,13 @@ button:hover:not(:disabled) {
 button:active:not(:disabled) {
   transform: scale(0.97);
 }
+
+/* кнопка "Играть" (главный CTA меню) имитирует физическое нажатие через
+   собственную box-shadow "кромку" (см. NicknameForm.jsx styles.button) —
+   стандартный transform:scale тут ломает иллюзию объёма, вместо этого
+   кнопка на active "проседает" вниз ровно на высоту своей кромки (4px) и
+   тень схлопывается до нуля, как будто кромка вжалась под пальцем */
+.btn-primary-cta:active:not(:disabled) {
+  transform: translateY(4px);
+  box-shadow: 0 0 0 #0f6b2c, 0 2px 6px rgba(0,0,0,0.35) !important;
+}

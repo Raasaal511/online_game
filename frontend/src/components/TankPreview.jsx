@@ -73,8 +73,13 @@ export default function TankPreview({ tankClass, gunSkin }) {
       };
 
       // hideLabels=true — превью не показывает ник/HP-бар/уровень, это не
-      // настоящий игрок, просто витрина класса/скина
-      drawTank3D(ctx, fakePlayer, false, TANK_SIZE, t, 0, 0, angle, true);
+      // настоящий игрок, просто витрина класса/скина. moveAngle=null (не 0!) —
+      // превью-танк стоит на месте, а не "едет вправо"; drawTank3D теперь
+      // плавно доворачивает корпус к moveAngle (см. computeBodySpriteAngle),
+      // и передача 0 сюда раньше была безобидной (moveAngle не влиял на
+      // корпус), а после добавления поворота корпуса заставляла витрину
+      // разворачиваться боком — превью должно оставаться axis-aligned.
+      drawTank3D(ctx, fakePlayer, false, TANK_SIZE, t, 0, 0, null, true);
 
       raf = requestAnimationFrame(draw);
     };

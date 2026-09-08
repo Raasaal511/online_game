@@ -14,6 +14,7 @@ import {
   drawMuzzleFlash3D,
   drawBomb3D,
   drawNukeWarning3D,
+  drawNukeScreenWarning3D,
   drawCastShadow,
   drawExplosion3D,
   drawNukeExplosion3D,
@@ -880,6 +881,12 @@ export default function GameCanvas({
       drawParticles3D(ctx, particles.getParticles());
 
       ctx.restore();
+
+      // экранная кромка предупреждения о ядерке — тоже ПОСЛЕ restore(), тем
+      // же способом, что и красная виньетка урона ниже (см. drawNukeScreenWarning3D)
+      if (current.nuke) {
+        drawNukeScreenWarning3D(ctx, current.nuke, timestamp / 1000, canvas.width, canvas.height);
+      }
 
       // красная виньетка урона — рисуется ПОСЛЕ restore(), не подвержена
       // screen-shake трансформации (виньетка привязана к экрану, не к миру)

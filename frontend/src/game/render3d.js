@@ -3,7 +3,7 @@
 // с сервера — здесь только визуальная проекция и слой глубины (z) для отрисовки.
 
 import { drawIcon } from "./icons.js";
-import { getSprite } from "./sprites.js";
+import { getSprite, isSpriteReady } from "./sprites.js";
 
 const TILT = 0.72; // вертикальное сжатие пола/объектов, имитирует наклон камеры
 // синхронизировано с WALL_MAX_HP на сервере (backend/app/game/entities.py) —
@@ -17,6 +17,46 @@ const LIGHT_DIR = normalize({ x: -0.55, y: -0.6 });
 function normalize(v) {
   const len = Math.hypot(v.x, v.y) || 1;
   return { x: v.x / len, y: v.y / len };
+}
+
+function shortestAngleDiff(a, b) {
+  let diff = b - a;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  return diff;
+}
+
+// сглаженный угол корпуса (не башни): playerId -> {angle, lastT}. Раньше
+// (первая интеграция спрайтов) корпус был жёстко axis-aligned — не крутился
+// вообще, только башня. Теперь корпус плавно доворачивается к текущему
+// направлению движения (moveAngle), но с ограничением на скорость поворота —
+// резкий мгновенный разворот на полный угол курса выглядел бы дёрганым при
+// каждой смене направления; плавное подруливание читается естественнее и не
+// путает с прицелом (тем, куда целится башня — она поворачивается отдельно
+// и мгновенно, как и раньше).
+const _bodyRotationState = new Map();
+const BODY_ROTATION_SPEED = 8; // 1/сек, скорость сглаживания угла корпуса к moveAngle
+
+function computeBodySpriteAngle(playerId, moveAngle, t) {
+  // спрайт по умолчанию рисуется "лицом вверх" — в системе отсчёта спрайта
+  // это соответствует нулевому повороту; moveAngle уже в игровых координатах
+  // (0 = вправо), а спрайт после +90° фикса (см. ниже, у поворота башни) тоже
+  // смотрит "вправо" при повороте на 0 — тот же принцип применяем к корпусу.
+  if (moveAngle == null || t == null) {
+    _bodyRotationState.delete(playerId);
+    return 0;
+  }
+  const prev = _bodyRotationState.get(playerId);
+  if (!prev) {
+    _bodyRotationState.set(playerId, { angle: moveAngle, lastT: t });
+    return moveAngle;
+  }
+  const dt = Math.max(0, Math.min(0.1, t - prev.lastT));
+  const smoothing = 1 - Math.exp(-BODY_ROTATION_SPEED * dt);
+  const angle = prev.angle + shortestAngleDiff(prev.angle, moveAngle) * smoothing;
+  prev.angle = angle;
+  prev.lastT = t;
+  return angle;
 }
 
 // прямоугольник со скруглёнными углами — заменяет эллипс там, где раньше
@@ -96,7 +136,11 @@ export function drawCastShadow(ctx, casterX, casterY, casterHeight, maxReach = 7
 // Kenney-пака (green/blue/red/dark/sand), поэтому скин выбирает, КАКОЙ
 // цветной спрайт ствола рисовать — ближайший по ощущению аналог исходного
 // цвета скина, а не точное совпадение hex.
-const GUN_SKIN_SPRITE_COLOR = {
+// экспортируется (не только используется внутри модуля) — меню выбора скина
+// (NicknameForm.jsx) рисует те же спрайты стволов в превью-свотчах, что и
+// реальная игра здесь: единый источник соответствия skin -> цвет спрайта,
+// вместо дублирования этой таблицы во втором месте кодовой базы
+export const GUN_SKIN_SPRITE_COLOR = {
   steel: "Dark",
   crimson: "Red",
   gold: "Sand",
@@ -136,7 +180,9 @@ const TANK_BODY_SPRITE_DIMS = {
 // высоту (расстояние от опорной точки башни до дульного среза одинаковое
 // visually для muzzle-flash позиционирования), различается только видимая
 // толщина/форма (см. BARREL_SPRITE_LEN ниже и подбор по классам)
-const BARREL_SPRITE_DIMS = {
+// экспортирован для NicknameForm.jsx — класс-иконки в меню масштабируют тот
+// же спрайт по его реальному аспекту, не квадратом
+export const BARREL_SPRITE_DIMS = {
   1: { w: 24, h: 52 },
   2: { w: 16, h: 52 },
   3: { w: 16, h: 52 },
@@ -151,7 +197,10 @@ const BARREL_SPRITE_DIMS = {
 // снайпер, дальний бой), barrel1 — такой же длины, но вдвое толще (→
 // brawler, ближний бой читается как "тяжелее"), barrel3 — самый короткий и
 // приземистый, с которым спутать не с чем (→ gunner, оставшийся вариант)
-const CLASS_BARREL_VARIANT = {
+// экспортирован — используется и в NicknameForm.jsx (класс-иконки в меню
+// рисуются тем же реальным спрайтом ствола, что игрок увидит в бою, вместо
+// абстрактной SVG-пиктограммы, которая не читалась однозначно как "оружие")
+export const CLASS_BARREL_VARIANT = {
   sniper: 2,
   brawler: 1,
   gunner: 3,
@@ -169,6 +218,53 @@ export function screenY(y, z = 0) {
   return y - z * TILT;
 }
 
+// составной тайл пола из двух вариантов травы (128px каждый, см. Kenney-пак) —
+// собирается ОДИН раз в оффскрин-canvas 256x256 (2x2, варианты вперемешку по
+// диагонали), а не просто ctx.createPattern(tileGrass1) в одиночку: один
+// повторяющийся 128px-тайл на карте 1760x1140 даёт заметный "тираж" — глаз
+// быстро цепляет идентичные квадраты; смешение двух едва различимых вариантов
+// в шахматном порядке ломает эту периодичность почти бесплатно (тот же приём,
+// что и предрендер glow-спрайта пули — дорогая подготовка один раз, потом
+// только дешёвое повторение готовой текстуры)
+let _floorPattern = null; // CanvasPattern, кэшируется по первому успешному созданию
+let _floorPatternCtx = null; // ctx, для которого создан паттерн (Pattern непереносим между context)
+
+function getFloorPattern(ctx) {
+  if (_floorPattern && _floorPatternCtx === ctx) return _floorPattern;
+
+  const grass1 = getSprite("tileGrass1");
+  const grass2 = getSprite("tileGrass2");
+  // createPattern требует уже декодированное изображение-источник — если
+  // спрайты ещё не загрузились, откладываем создание паттерна до следующего
+  // кадра (см. фолбэк-заливку в drawFloor ниже), не кэшируем "пустой" результат
+  if (!isSpriteReady(grass1) || !isSpriteReady(grass2)) return null;
+
+  const tileSize = grass1.naturalWidth || 128;
+  const composite = document.createElement("canvas");
+  composite.width = tileSize * 2;
+  composite.height = tileSize * 2;
+  const cctx = composite.getContext("2d");
+  cctx.drawImage(grass1, 0, 0, tileSize, tileSize);
+  cctx.drawImage(grass2, tileSize, 0, tileSize, tileSize);
+  cctx.drawImage(grass2, 0, tileSize, tileSize, tileSize);
+  cctx.drawImage(grass1, tileSize, tileSize, tileSize, tileSize);
+
+  // Kenney-текстура сама по себе — яркая аркадная лужайка (насыщенный
+  // чистый зелёный), а вся остальная сцена (стены, танки, виньетка) в тёмной
+  // военной палитре — прямое наложение спрайта смотрелось резким пятном
+  // "мультяшного газона" посреди мрачной сцены. "multiply" с тёмно-оливковым
+  // тоном притемняет и обесцвечивает тайл ДО совпадения с фоновым градиентом
+  // (#232b24), сохраняя при этом собственный узор травы (не плоская заливка).
+  cctx.globalCompositeOperation = "multiply";
+  cctx.fillStyle = "#3d4a3a";
+  cctx.fillRect(0, 0, composite.width, composite.height);
+  cctx.globalCompositeOperation = "source-over";
+
+  _floorPattern = ctx.createPattern(composite, "repeat");
+  _floorPatternCtx = ctx;
+  return _floorPattern;
+}
+
 export function drawFloor(ctx, width, height) {
   // приглушённая, чуть желчно-зелёная сталь вместо чистого сине-серого —
   // читается более "военно", как бетонный полигон, а не аркадный неон.
@@ -181,23 +277,18 @@ export function drawFloor(ctx, width, height) {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
 
-  ctx.save();
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.06)";
-  ctx.lineWidth = 1;
-  const step = 70;
-  for (let x = 0; x <= width; x += step) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
-    ctx.stroke();
+  // тайловая текстура поверх градиента-фолбэка — сам градиент остаётся под
+  // ней навсегда (не только пока спрайт грузится): тайл полупрозрачен по
+  // альфе сцены не нужен, но чуть темнее к низу карты градиент всё ещё даёт
+  // глубину, которую плоский тайл сам по себе не несёт
+  const pattern = getFloorPattern(ctx);
+  if (pattern) {
+    ctx.fillStyle = pattern;
+    ctx.fillRect(0, 0, width, height);
   }
-  for (let y = 0; y <= height; y += step) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
-    ctx.stroke();
-  }
-  ctx.restore();
+  // пока спрайты не декодированы — просто остаётся градиентная заливка выше,
+  // тайл "проявится" через несколько кадров тем же способом, что и любой
+  // другой спрайт в этой кодовой базе (см. sprites.js) — не блокируем рендер
 
   // виньетка для ощущения глубины сцены (усилена относительно v1 — карта
   // выросла, и без более тёмных краёв плоское поле визуально "рассыпалось")
@@ -246,8 +337,19 @@ function getPitEdgeGradient(ctx, x, y, width, height) {
   return grad;
 }
 
+// нет ни одного спрайта "яма/пропасть/провал" в скачанном Kenney-паке (танки
+// сверху, укрытия, полы — но не дыра в земле), поэтому яма остаётся
+// процедурной сознательно (в отличие от пола/стен выше) — см. бриф задачи.
+// Улучшение — не текстура, а более убедительная иллюзия глубины: несколько
+// вложенных затемняющихся "ступеней" от края к центру (раньше был один
+// плоский чёрный прямоугольник + один затухающий градиент по краю, что
+// читалось скорее как чёрное пятно, чем как проём вниз) плюс лёгкое
+// анимированное "марево" у самого дна, как нагретый воздух/испарения над
+// пропастью — вместе создают ощущение настоящей глубины без единого спрайта.
 export function drawPitZone3D(ctx, zone, t) {
   const { x, y, width, height } = zone;
+  const cx = x + width / 2;
+  const cy = y + height / 2;
 
   ctx.fillStyle = "#050505";
   ctx.fillRect(x, y, width, height);
@@ -257,9 +359,54 @@ export function drawPitZone3D(ctx, zone, t) {
   ctx.fillStyle = getPitEdgeGradient(ctx, x, y, width, height);
   ctx.fillRect(x - 20, y - 20, width + 40, height + 40);
 
+  // концентрические эллиптические кольца глубины — каждое следующее к центру
+  // чуть темнее с едва заметной светлой кромкой (имитация обода уступа);
+  // эллипс вместо прямоугольных "ступеней" (первая попытка) — на компактной
+  // яме нижних пропорций прямоугольные вложенные рамки читались как плоские
+  // вложенные квадраты, а не как проём вниз; округлая форма ближе к тому, как
+  // реально проседает грунт вокруг эпицентра
+  const ringCount = 4;
+  const maxDim = Math.max(width, height) * 0.65;
+  for (let i = ringCount; i >= 1; i--) {
+    const frac = i / ringCount;
+    const rw = (width / 2) * frac;
+    const rh = (height / 2) * frac;
+    ctx.fillStyle = `rgba(0, 0, 0, ${0.12 + (ringCount - i) * 0.09})`;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rw, rh, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // едва заметный светлый ободок на паре средних колец — читается как кромка
+  // уступа, ловящая немного света, а не однородный гладкий пролаз в черноту
+  ctx.strokeStyle = "rgba(200, 210, 220, 0.08)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, width * 0.38, height * 0.38, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, width * 0.2, height * 0.2, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // марево над дном — 2 смещённых полупрозрачных эллипса, медленно "дышащих"
+  // синхронно с ембером ниже; создаёт ощущение восходящего тёплого воздуха
+  // из пропасти, а не статичной дыры
+  const shimmerPhase = t * 0.9;
+  for (let i = 0; i < 2; i++) {
+    const sway = Math.sin(shimmerPhase + i * Math.PI) * width * 0.08;
+    const shimmerAlpha = 0.06 + 0.05 * Math.sin(shimmerPhase * 1.3 + i);
+    const grad = ctx.createRadialGradient(cx + sway, cy, 0, cx + sway, cy, maxDim);
+    grad.addColorStop(0, `rgba(148, 163, 184, ${shimmerAlpha})`);
+    grad.addColorStop(1, "rgba(148, 163, 184, 0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.ellipse(cx + sway, cy, width * 0.4, height * 0.3, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   // тонкая пульсирующая красная кромка по контуру ямы — читается как
   // явный сигнал "сюда нельзя", а не просто более тёмный участок пола;
   // без неё яма была легко спутать с обычной тенью на полу издалека
+  // (оставлено без изменений по явному запросу ранее в этой же сессии)
   const warnPulse = 0.5 + 0.5 * Math.sin(t * 2.4);
   ctx.strokeStyle = `rgba(220, 38, 38, ${0.35 + warnPulse * 0.35})`;
   ctx.lineWidth = 2;
@@ -267,6 +414,7 @@ export function drawPitZone3D(ctx, zone, t) {
 
   // огоньки на дне — краснее и заметнее прежних нейтрально-серых, читаются
   // как тлеющие угли на дне пропасти, а не случайные блики глубины
+  // (оставлено без изменений по явному запросу ранее в этой же сессии)
   const sparkCount = Math.max(2, Math.round((width * height) / 7000));
   for (let i = 0; i < sparkCount; i++) {
     const sx = x + _rubbleRand(i * 3.7 + x * 0.01) * width;
@@ -280,6 +428,76 @@ export function drawPitZone3D(ctx, zone, t) {
     ctx.arc(sx, sy, 4, 0, Math.PI * 2);
     ctx.fill();
   }
+}
+
+// внутренние разрушаемые укрытия (destructible=true в backend/app/game/map.py)
+// все короткие/тонкие (130-160 x 28-30px) — одиночный спрайт мешка с песком
+// (64x44), замощённый вдоль длинной оси, читается как настоящая баррикада из
+// мешков, а не растянутая до неузнаваемости картинка. Внешние границы поля
+// (is_border на сервере, не пересылается на клиент — но других
+// недеструктиблов на карте сейчас нет, так что "не destructible" здесь и
+// значит "граница") остаются процедурной заливкой: та же текстура на полосе
+// 1760x24px растянулась бы в мутное пятно без единого узнаваемого мешка —
+// сознательно оставлено без спрайта, см. бриф задачи.
+const WALL_TOP_SPRITE = "sandbagBeige";
+
+// составной тайл мешков с песком, замощённый по короткой стене — тот же
+// приём кэширования готового паттерна, что и у пола (getFloorPattern), но
+// без смешения вариантов: у sandbagBeige нет второго варианта текстуры, а
+// сама укладка мешков уже даёт достаточно визуального разнообразия построчно
+let _wallTopPattern = null;
+let _wallTopPatternCtx = null;
+
+function getWallTopPattern(ctx) {
+  if (_wallTopPattern && _wallTopPatternCtx === ctx) return _wallTopPattern;
+  const sprite = getSprite(WALL_TOP_SPRITE);
+  if (!isSpriteReady(sprite)) return null;
+  _wallTopPattern = ctx.createPattern(sprite, "repeat");
+  _wallTopPatternCtx = ctx;
+  return _wallTopPattern;
+}
+
+// верхняя (обращённая к камере "сверху") грань стены — единственная часть
+// drawWall3D, которая раньше была плоской заливкой-градиентом; боковые грани
+// и отбрасываемая тень вокруг неё не трогались, они и так давали объём
+function drawWallTopFace(ctx, wall, x, topY, width, height, topLight) {
+  if (wall.destructible) {
+    const pattern = getWallTopPattern(ctx);
+    if (pattern) {
+      // ctx.translate двигает и систему координат заливки паттерном (фазу
+      // тайла), не только геометрию fillRect — поэтому просто переносим
+      // начало координат в угол стены перед заливкой, без ручной DOMMatrix
+      // возни с самим CanvasPattern
+      ctx.save();
+      ctx.translate(x, topY);
+      ctx.fillStyle = pattern;
+      ctx.fillRect(0, 0, width, height);
+      ctx.restore();
+
+      // лёгкое затемнение по освещённости грани поверх текстуры — сохраняет
+      // то же направленное освещение, что было у процедурного градиента,
+      // текстура одна и та же независимо от ориентации стены иначе выглядела
+      // бы "приклеенной", а не частью освещённой сцены
+      ctx.fillStyle = `rgba(15, 15, 10, ${Math.max(0, -topLight) * 0.35})`;
+      ctx.fillRect(x, topY, width, height);
+      ctx.strokeStyle = "rgba(15, 23, 42, 0.35)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, topY + 0.5, width - 1, height - 1);
+      return;
+    }
+    // спрайт ещё не декодирован — на первых кадрах просто оставляем прежний
+    // процедурный градиент ниже, не блокируя рендер (тот же silent pop-in,
+    // что и у пола/пуль в этой кодовой базе)
+  }
+
+  const topGrad = ctx.createLinearGradient(x, topY, x, topY + height);
+  topGrad.addColorStop(0, shadeColor("#4a4d42", 0.2 + topLight * 0.25));
+  topGrad.addColorStop(1, shadeColor("#4a4d42", topLight * 0.2));
+  ctx.fillStyle = topGrad;
+  ctx.fillRect(x, topY, width, height);
+  ctx.strokeStyle = "rgba(203, 213, 225, 0.18)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 0.5, topY + 0.5, width - 1, height - 1);
 }
 
 export function drawWall3D(ctx, wall) {
@@ -353,14 +571,7 @@ export function drawWall3D(ctx, wall) {
   // верхняя грань (светлее всех — обращена прямо к свету, приподнята на depth)
   const topY = y - depth * TILT;
   const topLight = faceLighting(0, -1); // нормаль вверх — навстречу свету сверху
-  const topGrad = ctx.createLinearGradient(x, topY, x, topY + height);
-  topGrad.addColorStop(0, shadeColor("#4a4d42", 0.2 + topLight * 0.25));
-  topGrad.addColorStop(1, shadeColor("#4a4d42", topLight * 0.2));
-  ctx.fillStyle = topGrad;
-  ctx.fillRect(x, topY, width, height);
-  ctx.strokeStyle = "rgba(203, 213, 225, 0.18)";
-  ctx.lineWidth = 1;
-  ctx.strokeRect(x + 0.5, topY + 0.5, width - 1, height - 1);
+  drawWallTopFace(ctx, wall, x, topY, width, height, topLight);
 
   // повреждение растёт постепенно с числом попаданий (стена держит несколько
   // ударов, не только последний) — трещины множатся, а не появляются разом
@@ -600,14 +811,24 @@ export function drawPickup3D(ctx, pickup, colors, t) {
 
   // супер-пикап красится в классический янтарно-оранжевый Dragon Ball —
   // независимо от общего "super"-цвета из PICKUP_COLORS (тот остаётся
-  // розовым для UI/бейджей), здесь это единственное узнаваемое отличие
-  const sphereColor = isSuper ? "#f6a623" : color;
+  // розовым для UI/бейджей), здесь это единственное узнаваемое отличие.
+  // Настоящий шар — глянцевый и ЯРКИЙ (насыщенный оранжевый почти без
+  // затемнения к краю, резкий крупный белый блик), не тускло-затенённая
+  // сфера — прошлая версия была заметно бледнее эталона.
+  const sphereColor = isSuper ? "#ff9012" : color;
 
   const grad = ctx.createRadialGradient(highlightX, highlightY, 1, 0, 0, radius);
-  grad.addColorStop(0, "#ffffff");
-  grad.addColorStop(0.3, sphereColor);
-  grad.addColorStop(0.75, shadeColor(sphereColor, -0.2));
-  grad.addColorStop(1, shadeColor(sphereColor, -0.5));
+  if (isSuper) {
+    grad.addColorStop(0, "#ffffff");
+    grad.addColorStop(0.22, "#ffcf7a");
+    grad.addColorStop(0.55, sphereColor);
+    grad.addColorStop(1, shadeColor(sphereColor, -0.1));
+  } else {
+    grad.addColorStop(0, "#ffffff");
+    grad.addColorStop(0.3, sphereColor);
+    grad.addColorStop(0.75, shadeColor(sphereColor, -0.2));
+    grad.addColorStop(1, shadeColor(sphereColor, -0.5));
+  }
   ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.arc(0, 0, radius, 0, Math.PI * 2);
@@ -616,36 +837,37 @@ export function drawPickup3D(ctx, pickup, colors, t) {
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // терминатор (граница света/тени) скользит по сфере вслед за вращением —
-  // тонкий тёмный полумесяц с той стороны, что сейчас "отвёрнута" от блика
+  // терминатор (граница света/тени) — у супер-шара заметно слабее, чем у
+  // обычных пикапов: настоящий Dragon Ball читается как ровно освещённый
+  // глянцевый шар, не затемнённый наполовину
   const termAngle = spin + Math.PI;
   ctx.save();
   ctx.clip(new Path2D(`M ${-radius} 0 A ${radius} ${radius} 0 1 1 ${radius} 0.001 Z`));
-  ctx.fillStyle = "rgba(0,0,0,0.28)";
+  ctx.fillStyle = isSuper ? "rgba(120, 50, 0, 0.16)" : "rgba(0,0,0,0.28)";
   ctx.beginPath();
   ctx.ellipse(Math.cos(termAngle) * radius * 0.6, 0, radius * 0.55, radius, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
   if (isSuper) {
-    // классическая 7-звезда Dragon Ball: одна крупная 4-лучевая звезда в
-    // центре — ярко-красная с чёрной обводкой, статичная (не дрейфует и не
-    // тонет в размытых копиях), плюс 6 мелких спутников-звёзд вокруг —
-    // именно так выглядит настоящий шар с семью звёздами, а не рой пятен
+    // классическая 7-звезда Dragon Ball: НЕ разбросана по всей сфере — все
+    // звёзды тесно сгруппированы одним компактным кластером близко к
+    // центру (как на настоящем шаре: одна покрупнее + 6 маленьких вплотную
+    // вокруг неё), а не расставлены широко по поверхности
     ctx.save();
     ctx.beginPath();
     ctx.arc(0, 0, radius, 0, Math.PI * 2);
     ctx.clip();
 
-    drawDragonStar(ctx, 0, 0, radius * 0.62);
+    drawDragonStar(ctx, 0, 0, radius * 0.34);
 
     const satellites = [
-      { a: 0.35, d: 0.62 },
-      { a: 1.1, d: 0.68 },
-      { a: 1.95, d: 0.6 },
-      { a: 2.7, d: 0.66 },
-      { a: 3.6, d: 0.62 },
-      { a: 4.6, d: 0.68 },
+      { a: 0.5, d: 0.34 },
+      { a: 1.55, d: 0.32 },
+      { a: 2.5, d: 0.36 },
+      { a: 3.4, d: 0.33 },
+      { a: 4.4, d: 0.35 },
+      { a: 5.6, d: 0.33 },
     ];
     for (const s of satellites) {
       const sx = Math.cos(s.a) * radius * s.d;
@@ -1462,7 +1684,27 @@ export function drawNukeWarning3D(ctx, nuke, t) {
     ctx.stroke();
   }
 
-  // мигающий символ радиации в центре — учащается по мере приближения взрыва
+  // тлеющее ядро в центре — тот же спрайт-кадр вспышки (explosion1..5.png),
+  // что и у обычных взрывов ниже, а не изолированный процедурный примитив:
+  // растущий номер кадра по мере приближения детонации читается как
+  // "нарастающая нестабильность" (корона становится всё более рваной), плюс
+  // спрайт медленно вращается — простой радиационный трилистник раньше не
+  // давал ощущения текстуры/энергии, только геометрический символ
+  const coreFrame = Math.min(EXPLOSION_FRAME_COUNT - 1, Math.floor(nuke.warning_progress * EXPLOSION_FRAME_COUNT));
+  const coreSprite = getSprite(`explosion${coreFrame + 1}`);
+  const coreSize = 26 + nuke.warning_progress * 20 + fastPulse * 6;
+  ctx.save();
+  ctx.translate(nuke.x, nuke.y);
+  ctx.rotate(t * 1.4);
+  ctx.globalAlpha = 0.55 + fastPulse * 0.35;
+  if (isSpriteReady(coreSprite)) {
+    ctx.drawImage(coreSprite, -coreSize / 2, -coreSize / 2, coreSize, coreSize);
+  }
+  ctx.restore();
+
+  // мигающий символ радиации поверх спрайтового ядра — учащается по мере
+  // приближения взрыва; сохранён как единственный полностью узнаваемый
+  // "это ядерка" силуэт, символ радиации ни с чем не спутать
   const blinkSpeed = 3 + nuke.warning_progress * 14;
   const blink = Math.sin(t * blinkSpeed) > 0;
   if (blink) {
@@ -1485,6 +1727,38 @@ export function drawNukeWarning3D(ctx, nuke, t) {
     ctx.fill();
     ctx.restore();
   }
+}
+
+// Экранная (не мировая!) часть предупреждения — тревожная кромка по краям
+// ВСЕГО экрана, усиливающаяся по мере приближения взрыва. Рисуется отдельной
+// функцией, вызываемой ПОСЛЕ ctx.restore() в GameCanvas.jsx (тем же способом,
+// что и существующая красная виньетка урона hitFlash) — если вызвать её
+// внутри мирового save()/translate(shakeX, shakeY) блока вместе с
+// drawNukeWarning3D, виньетка дрожала бы вместе со screen-shake и съезжала
+// с реальных краёв экрана, а не оставалась приклеенной к границе вьюпорта.
+// Игрок может быть далеко от эпицентра (ядерка триггерится глобально по всей
+// карте) — эта кромка единственный сигнал для того, кто ещё не видит кольца
+// в мировых координатах, что "весь экран должен успеть увидеть и разбежаться".
+export function drawNukeScreenWarning3D(ctx, nuke, t, canvasWidth, canvasHeight) {
+  const pulse = 0.5 + 0.5 * Math.sin(t * 6);
+  // едва заметно на старте предупреждения, отчётливо тревожно ближе к взрыву —
+  // не должна мешать читать поле боя первые секунды после спавна ядерки
+  const intensity = Math.max(0, nuke.warning_progress - 0.15) / 0.85;
+  if (intensity <= 0) return;
+
+  const vignette = ctx.createRadialGradient(
+    canvasWidth / 2,
+    canvasHeight / 2,
+    Math.min(canvasWidth, canvasHeight) * 0.38,
+    canvasWidth / 2,
+    canvasHeight / 2,
+    Math.max(canvasWidth, canvasHeight) * 0.58
+  );
+  const alpha = intensity * (0.28 + pulse * 0.22);
+  vignette.addColorStop(0, "rgba(239, 68, 68, 0)");
+  vignette.addColorStop(1, `rgba(239, 68, 68, ${alpha})`);
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 }
 
 // 5 последовательных PNG-кадров (explosion1..5.png) вместо процедурного
@@ -1597,8 +1871,13 @@ export function drawNukeExplosion3D(ctx, explosion, age) {
   ctx.ellipse(explosion.x, (explosion.y + stemTopY) / 2, stemWidth, Math.abs(explosion.y - stemTopY) / 2, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // огненное кольцо у основания столба — раскалённое ядро взрыва, ещё не
-  // остывшее в клубящуюся пыль (в отличие от серой шапки/ножки выше)
+  // огненное ядро у основания столба — раскалённое, ещё не остывшее в
+  // клубящуюся пыль (в отличие от серой шапки/ножки выше). Раньше был один
+  // плоский radial-gradient блин; теперь под тем же ambient-свечением лежат
+  // 3 наложенных sprite-кадра explosion (те же PNG, что и у drawExplosion3D,
+  // см. EXPLOSION_FRAME_COUNT) под разными углами и масштабами — даёт
+  // настоящую рваную "корону" пламени вместо идеально круглого градиента,
+  // читается заметно текстурнее и ближе к формату остальных взрывов в игре
   if (age < 0.55) {
     const fireAlpha = (1 - age / 0.55) * alpha;
     const fireR = explosion.radius * (0.22 + age * 0.3);
@@ -1610,6 +1889,27 @@ export function drawNukeExplosion3D(ctx, explosion, age) {
     ctx.beginPath();
     ctx.arc(explosion.x, explosion.y, fireR, 0, Math.PI * 2);
     ctx.fill();
+
+    const fireFrame = Math.min(EXPLOSION_FRAME_COUNT - 1, Math.floor((age / 0.55) * EXPLOSION_FRAME_COUNT));
+    const fireSprite = getSprite(`explosion${fireFrame + 1}`);
+    if (isSpriteReady(fireSprite)) {
+      ctx.save();
+      ctx.globalAlpha = fireAlpha;
+      const layers = [
+        { scale: 1, rot: 0 },
+        { scale: 0.75, rot: Math.PI / 3 },
+        { scale: 0.55, rot: -Math.PI / 4 },
+      ];
+      for (const layer of layers) {
+        const size = fireR * 2.6 * layer.scale;
+        ctx.save();
+        ctx.translate(explosion.x, explosion.y);
+        ctx.rotate(layer.rot);
+        ctx.drawImage(fireSprite, -size / 2, -size / 2, size, size);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
   }
 
   // шапка гриба — округлое облако над столбом, растёт с задержкой и медленнее ножки
@@ -1892,12 +2192,27 @@ export function drawTank3D(
   ctx.save();
   ctx.translate(x, 0);
 
+  // корпус плавно доворачивается к направлению движения (не мгновенно и не
+  // на полный угол — см. computeBodySpriteAngle) — небольшой, но заметный
+  // доворот, как будто гусеницы подруливают, вместо жёсткого axis-aligned
+  // корпуса, который был при первой интеграции спрайтов. Поворот применяется
+  // вокруг РЕАЛЬНОГО центра корпуса (x, topY) — точка, в которой физически
+  // рисуется спрайт, — а не вокруг (x, 0), иначе рисунок улетел бы в сторону
+  // при повороте. Композиция translate(0,topY)+rotate+translate(0,-topY)
+  // позволяет оставить весь существующий код ниже (использующий абсолютные
+  // координаты topY±half) без изменений — после неё локальная точка (0,topY)
+  // по-прежнему картируется в мировую (x,topY), просто с добавленным поворотом.
+  const bodyAngle = computeBodySpriteAngle(player.id, moveAngle, t);
+  ctx.translate(0, topY);
+  ctx.rotate(bodyAngle + Math.PI / 2);
+  ctx.translate(0, -topY);
+
   // корпус — теперь спрайт Kenney (tankBody_green/blue/bigRed уже включает
   // гусеницы по бокам, отдельный слой tracksDouble/tracksSmall не нужен,
   // проверено визуально по пикселям спрайта), а не процедурные грани.
-  // Спрайт нарисован лицом "вверх" (Kenney top-down конвенция) и здесь не
-  // вращается вместе с башней — корпус в этой игре всегда axis-aligned,
-  // поворачивается только турель (angle применяется отдельно ниже к башне).
+  // Спрайт нарисован лицом "вверх" (Kenney top-down конвенция), угол корпуса
+  // выше уже учитывает эту +90°-поправку (bodyAngle + PI/2) — тот же принцип
+  // и знак, что и у поворота башни ниже (spriteForwardFix).
   const bodySpriteName = isMiniboss ? "tankBody_bigRed" : isMe ? "tankBody_green" : "tankBody_blue";
   const bodyDims = isMiniboss
     ? TANK_BODY_SPRITE_DIMS.bigRed
@@ -2028,10 +2343,14 @@ export function drawTank3D(
   ctx.save();
   ctx.translate(x, turretY);
 
-  // тень башни на корпусе
-  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  // тень башни на корпусе — раньше была слишком слабой (0.25 альфа) на фоне
+  // сплошного цветного спрайта башни: читалась не как объёмная тень, а как
+  // будто сама башня частично прозрачная и сквозь неё что-то просвечивает.
+  // Плотнее и чуть смещена — явный контактный контур у основания, а не
+  // полупрозрачное пятно поверх всего круга.
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
   ctx.beginPath();
-  ctx.ellipse(2, 3, tankSize / 3 + 2, tankSize / 3 + 1, 0, 0, Math.PI * 2);
+  ctx.ellipse(3, 4, tankSize / 3 + 2, tankSize / 3 + 1, 0, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.rotate(angle);
