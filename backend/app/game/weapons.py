@@ -54,11 +54,12 @@ from app.game.entities import (
     TANK_CLASSES,
     DEFAULT_TANK_CLASS,
     LASER_STAR_BEAM_COUNT,
-    LASER_STAR_RANGE,
+    LASER_STAR_DURATION,
     LASER_STAR_WIDTH,
     LASER_STAR_TICK_INTERVAL,
     LASER_STAR_TICK_DAMAGE,
 )
+from app.game.map import ray_distance_to_field_edge
 
 _WEAPON_COOLDOWN = {
     "cannon": FIRE_COOLDOWN,
@@ -363,37 +364,52 @@ class WeaponMixin:
             self._apply_damage(player, dmg, player.burn_owner_id)
 
     def _process_laser_star(self, now: float) -> None:
-        # замена старого пассивного "super"-баффа: 8 лучей зафиксированы под
-        # углом относительно башни в момент подбора (laser_star_angles не
-        # меняются, пока действует бафф) и тикают урон сами — не привязаны к
-        # кнопке стрельбы игрока, см. _apply_pickup в room.py. Геометрия
-        # проверки такая же, как у лазера мини-босса (_fire_miniboss_laser в
-        # miniboss.py): проекция на направление луча + перпендикулярное
-        # расстояние, но здесь ЛУЧ КОНЕЧНОЙ длины (along ограничен диапазоном
-        # [0, LASER_STAR_RANGE], не бьёт "назад" вдоль своей же линии).
-        # Стены намеренно игнорируются (не режем длину луча по геометрии
-        # укрытий) — по спеку это визуальный/игровой эффект, не хитскан-снайпер,
-        # усложнять геометрию под стены ради 5-секундного баффа не оправдано.
+        # замена старого пассивного "super"-баффа: 8 лучей стартуют под углом
+        # относительно башни в момент подбора и НЕПРЕРЫВНО вращаются, делая
+        # ровно один полный оборот (360°) за LASER_STAR_DURATION, затем гаснут —
+        # не привязаны к кнопке стрельбы игрока, см. _apply_pickup в room.py.
+        # Углы пересчитываются КАЖДЫЙ тик (не только на тик-интервале урона),
+        # иначе вращение на клиенте читалось бы ступенчато вместо плавного.
+        # Геометрия проверки попадания такая же, как у лазера мини-босса
+        # (_fire_miniboss_laser в miniboss.py): проекция на направление луча +
+        # перпендикулярное расстояние. Длина каждого луча — не константа, а
+        # точное расстояние до границы арены под ЕГО ТЕКУЩИМ углом из ТЕКУЩЕЙ
+        # позиции игрока (ray_distance_to_field_edge) — луч всегда обрывается
+        # ровно на краю поля, при любом положении игрока и любом угле вращения.
+        # Стены крепости внутри карты намеренно игнорируются — это только
+        # внешняя граница арены, не препятствия.
         for player in list(self.players.values()):
             if not player.alive or now >= player.laser_star_until:
                 continue
-            if not player.laser_star_angles:
-                continue
+
+            progress = (now - player.laser_star_started_at) / LASER_STAR_DURATION
+            rotation = min(1.0, max(0.0, progress)) * 2 * math.pi
+            player.laser_star_angles = [
+                player.laser_star_base_angle + rotation + i * (2 * math.pi / LASER_STAR_BEAM_COUNT)
+                for i in range(LASER_STAR_BEAM_COUNT)
+            ]
+
             if now - player.laser_star_last_tick_at < LASER_STAR_TICK_INTERVAL:
                 continue
             player.laser_star_last_tick_at = now
             mult = player.level_damage_mult()
             dmg = round(LASER_STAR_TICK_DAMAGE * mult)
+            # длина и направление каждого луча не зависят от цели — считаем
+            # один раз на 8 лучей, а не заново на каждую пару луч×цель (было
+            # 8 x N_целей вызовов ray_distance_to_field_edge на один тик урона)
+            beams = [
+                (math.cos(a), math.sin(a), ray_distance_to_field_edge(player.x, player.y, a))
+                for a in player.laser_star_angles
+            ]
             # снимок целей — см. комментарий в _explode_rocket
             for target in list(self.players.values()):
                 if target.id == player.id or not target.alive:
                     continue
                 tx, ty = target.x - player.x, target.y - player.y
                 hit = False
-                for angle in player.laser_star_angles:
-                    dx, dy = math.cos(angle), math.sin(angle)
+                for dx, dy, beam_len in beams:
                     along = tx * dx + ty * dy
-                    if along < 0 or along > LASER_STAR_RANGE:
+                    if along < 0 or along > beam_len:
                         continue
                     perp = abs(tx * dy - ty * dx)
                     if perp <= LASER_STAR_WIDTH / 2 + target.size / 2:

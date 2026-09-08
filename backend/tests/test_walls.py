@@ -1,8 +1,35 @@
+import math
 import time
 
+import pytest
+
 from app.game.entities import Player, Bullet, WALL_MAX_HP
-from app.game.map import WALLS
+from app.game.map import WALLS, FIELD_WIDTH, FIELD_HEIGHT, ray_distance_to_field_edge
 from app.game.room import rect_intersects_walls, _find_intersecting_wall
+
+
+def test_ray_distance_to_field_edge_from_center():
+    cx, cy = FIELD_WIDTH / 2, FIELD_HEIGHT / 2
+    # вправо от центра — до правого края
+    assert ray_distance_to_field_edge(cx, cy, 0.0) == pytest.approx(FIELD_WIDTH / 2)
+    # вниз от центра — до нижнего края
+    assert ray_distance_to_field_edge(cx, cy, math.pi / 2) == pytest.approx(FIELD_HEIGHT / 2)
+    # влево от центра — до левого края
+    assert ray_distance_to_field_edge(cx, cy, math.pi) == pytest.approx(FIELD_WIDTH / 2)
+
+
+def test_ray_distance_to_field_edge_never_exceeds_field_bounds():
+    # луч из произвольной точки под произвольным углом должен всегда
+    # заканчиваться строго внутри границ поля (с небольшим допуском на
+    # погрешность вычислений с плавающей точкой)
+    x, y = FIELD_WIDTH * 0.2, FIELD_HEIGHT * 0.8
+    for i in range(16):
+        angle = i * (2 * math.pi / 16)
+        dist = ray_distance_to_field_edge(x, y, angle)
+        end_x = x + math.cos(angle) * dist
+        end_y = y + math.sin(angle) * dist
+        assert -0.5 <= end_x <= FIELD_WIDTH + 0.5
+        assert -0.5 <= end_y <= FIELD_HEIGHT + 0.5
 
 
 def _shoot_wall_once(room, player_id, wall):

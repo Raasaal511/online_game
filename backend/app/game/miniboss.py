@@ -27,7 +27,6 @@ from app.game.entities import (
     MINIBOSS_ARTILLERY_RADIUS,
     MINIBOSS_LASER_CHARGE_TIME,
     MINIBOSS_LASER_WIDTH,
-    MINIBOSS_LASER_RANGE,
     MINIBOSS_LASER_DAMAGE,
     MINIBOSS_SHOTGUN_COUNT,
     MINIBOSS_SHOTGUN_SPREAD,
@@ -196,8 +195,15 @@ class MinibossMixin:
         boss.laser_fire_at = now + MINIBOSS_LASER_CHARGE_TIME
 
     def _fire_miniboss_laser(self, boss: Player) -> None:
+        from app.game.map import ray_distance_to_field_edge
+
         angle = boss.laser_angle
         dx, dy = math.cos(angle), math.sin(angle)
+        # длина луча — не константа, а точное расстояние до границы арены под
+        # этим углом из текущей позиции босса (см. ray_distance_to_field_edge
+        # в map.py) — тот же принцип, что и у лазерной звезды игрока, луч
+        # обрывается ровно на краю карты, а не летит на фиксированную дистанцию
+        beam_len = ray_distance_to_field_edge(boss.x, boss.y, angle)
         # снимок списка — см. комментарий в weapons.py._explode_rocket
         for target in list(self.players.values()):
             if target.id == boss.id or not target.alive:
@@ -206,14 +212,14 @@ class MinibossMixin:
             # если попадание находится впереди по направлению луча
             tx, ty = target.x - boss.x, target.y - boss.y
             along = tx * dx + ty * dy
-            if along < 0 or along > MINIBOSS_LASER_RANGE:
+            if along < 0 or along > beam_len:
                 continue
             perp = abs(tx * dy - ty * dx)
             if perp > MINIBOSS_LASER_WIDTH / 2 + target.size / 2:
                 continue
             self._apply_damage(target, MINIBOSS_LASER_DAMAGE, boss.id)
         self._laser_shots.append(
-            {"x": boss.x, "y": boss.y, "angle": angle, "range": MINIBOSS_LASER_RANGE}
+            {"x": boss.x, "y": boss.y, "angle": angle, "range": beam_len}
         )
 
     def _fire_miniboss_shotgun(self, boss: Player, aim_dx: float, aim_dy: float, aim_dist: float) -> None:

@@ -25,6 +25,8 @@ from app.game.entities import (
     TRAP_SLOW_DURATION,
     TRAP_SLOW_MULT,
     TRAP_TRIGGER_COOLDOWN,
+    TRAP_COUNT,
+    TRAP_ROTATION_INTERVAL,
     COLLISION_DAMAGE,
     COLLISION_PUSHBACK,
     SPAWN_PROTECTION_DURATION,
@@ -68,9 +70,9 @@ from app.game.map import (
     WALLS,
     WALL_THICKNESS,
     SPAWN_POINTS,
-    TRAP_POINTS,
     SUPER_PICKUP_POINT,
     PIT_ZONES,
+    ray_distance_to_field_edge,
 )
 
 # самая тонкая стена на карте — используется для расчёта под-шагов движения
@@ -130,9 +132,15 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
         self.players: dict[str, Player] = {}
         self.bullets: dict[str, Bullet] = {}
         self.pickups: dict[str, Pickup] = {}
-        self.traps: dict[str, Trap] = {
-            trap.id: trap for trap in (Trap.new(x, y) for x, y in TRAP_POINTS)
-        }
+        # ловушки больше не стоят в фиксированных точках (TRAP_POINTS) — теперь
+        # TRAP_COUNT штук случайно расставлены при старте и по одной ротируются
+        # в новое случайное место каждые TRAP_ROTATION_INTERVAL сек, см. _rotate_traps
+        self.traps: dict[str, Trap] = {}
+        self._next_trap_rotation_at = time.monotonic() + TRAP_ROTATION_INTERVAL
+        for _ in range(TRAP_COUNT):
+            trap = self._new_random_trap()
+            if trap is not None:
+                self.traps[trap.id] = trap
         self.bombs: dict[str, Bomb] = {}
         self.connections: dict[str, WebSocket] = {}
         self.started_at = time.monotonic()
@@ -204,6 +212,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
         self._spawn_super_pickup(now)
         self._spawn_bombs(now)
         self._process_bombs(now)
+        self._rotate_traps(now)
         self._spawn_nuke(now)
         self._process_nuke(now)
         self._spawn_portals(now)
@@ -679,12 +688,16 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
             player.speed_boost_until = base + SPEED_BOOST_DURATION
         elif pickup.kind == "super":
             # больше не пассивный статовый бафф — превращает танк в лазерную
-            # турель на LASER_STAR_DURATION секунд: 8 лучей фиксированы под
-            # углом ОТНОСИТЕЛЬНО ТЕКУЩЕЙ БАШНИ в момент подбора (не переприцеливаются
-            # игроком) и тикают урон сами, без удержания кнопки — см. _process_laser_star.
+            # турель на LASER_STAR_DURATION секунд: 8 лучей стартуют под углом
+            # ОТНОСИТЕЛЬНО ТЕКУЩЕЙ БАШНИ в момент подбора и затем непрерывно
+            # вращаются, делая РОВНО один полный оборот (360°) за всё время
+            # действия, после чего гаснут — см. _process_laser_star, которая
+            # каждый тик пересчитывает laser_star_angles из started_at/base_angle.
             # Полный хил оставлен как "power fantasy" — не усложняет механику,
             # но подчёркивает, что подбор супер-пикапа — момент силы.
             player.laser_star_until = now + LASER_STAR_DURATION
+            player.laser_star_started_at = now
+            player.laser_star_base_angle = player.turret_angle
             player.laser_star_angles = [
                 player.turret_angle + i * (2 * math.pi / LASER_STAR_BEAM_COUNT)
                 for i in range(LASER_STAR_BEAM_COUNT)
@@ -769,6 +782,32 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
                     if player.hp <= 0:
                         player.hp = 0
                         self._kill_player(player, player.id)  # ловушка = самоурон, не чужое убийство
+
+    def _new_random_trap(self) -> Trap | None:
+        # та же логика выбора свободной точки, что у _spawn_pickups/_spawn_bombs —
+        # избегаем стен И ямы (ловушка внутри уже смертельной зоны бессмысленна)
+        for _ in range(20):
+            x = random.uniform(60, FIELD_WIDTH - 60)
+            y = random.uniform(60, FIELD_HEIGHT - 60)
+            if not rect_intersects_walls(x, y, 24) and not self._in_pit_zone(x, y):
+                return Trap.new(x, y)
+        return None
+
+    def _rotate_traps(self, now: float) -> None:
+        # ловушки больше не стоят на месте — раз в TRAP_ROTATION_INTERVAL
+        # одна случайная ловушка исчезает и тут же появляется новая в другой
+        # случайной точке, поддерживая постоянное количество TRAP_COUNT
+        if now < self._next_trap_rotation_at:
+            return
+        self._next_trap_rotation_at = now + TRAP_ROTATION_INTERVAL
+
+        if self.traps:
+            old_id = random.choice(list(self.traps.keys()))
+            del self.traps[old_id]
+
+        new_trap = self._new_random_trap()
+        if new_trap is not None:
+            self.traps[new_trap.id] = new_trap
 
     def _check_tank_collisions(self, now: float) -> None:
         # взаимное отталкивание + небольшой урон при "тарáне" двух танков —
@@ -902,6 +941,14 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
                     "is_burning": now < p.burn_until,
                     "laser_star_active": now < p.laser_star_until,
                     "laser_star_angles": p.laser_star_angles if now < p.laser_star_until else [],
+                    # длина каждого луча параллельна laser_star_angles — не
+                    # константа, обрезана по границе арены под текущим углом
+                    # (см. _process_laser_star в weapons.py)
+                    "laser_star_lengths": (
+                        [ray_distance_to_field_edge(p.x, p.y, a) for a in p.laser_star_angles]
+                        if now < p.laser_star_until
+                        else []
+                    ),
                     "is_falling": p.falling_since > 0,
                     "fall_progress": (
                         max(0.0, min(1.0, (now - p.falling_since) / PIT_FALL_TIME))
@@ -932,6 +979,7 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
                                 (now - p.laser_started_at)
                                 / max(1e-6, p.laser_fire_at - p.laser_started_at),
                             ),
+                            "range": ray_distance_to_field_edge(p.x, p.y, p.laser_angle),
                         }
                         if p.laser_charging_until > now
                         else None

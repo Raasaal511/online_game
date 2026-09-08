@@ -10,6 +10,33 @@ const GRAVITY = 420; // px/sec^2, псевдо-3D падение осколко�
 // почти прозрачные) обрезаются первыми — визуально почти незаметно.
 const MAX_PARTICLES = 500;
 
+// предрендеренный спрайт залитого круга на цвет частицы: draw() раньше делал
+// beginPath/arc/fill на КАЖДУЮ частицу КАЖДЫЙ кадр (до 500 отдельных
+// path-заливок/кадр в пике) — Canvas2D заметно дешевле просто копирует уже
+// растеризованный спрайт (drawImage), чем строит и заливает path каждый раз.
+// Конечное небольшое число уникальных цветов частиц (взрыв/искры/дым/пламя/
+// пыль/вспышки подбора) делает кэш по цвету эффективным — тот же приём, что
+// у _glowSpriteCache в render3d.js для свечения пуль.
+const _particleSpriteCache = new Map(); // key: color -> HTMLCanvasElement
+const PARTICLE_SPRITE_SIZE = 32; // px, разрешение спрайта (радиус = SIZE/2)
+
+function getParticleSprite(color) {
+  let sprite = _particleSpriteCache.get(color);
+  if (sprite) return sprite;
+
+  sprite = document.createElement("canvas");
+  sprite.width = PARTICLE_SPRITE_SIZE;
+  sprite.height = PARTICLE_SPRITE_SIZE;
+  const sctx = sprite.getContext("2d");
+  const center = PARTICLE_SPRITE_SIZE / 2;
+  sctx.fillStyle = color;
+  sctx.beginPath();
+  sctx.arc(center, center, center, 0, Math.PI * 2);
+  sctx.fill();
+  _particleSpriteCache.set(color, sprite);
+  return sprite;
+}
+
 export function createParticleSystem() {
   let particles = [];
 
@@ -213,7 +240,13 @@ export function createParticleSystem() {
   }
 
   function update(dt) {
-    for (const p of particles) {
+    // in-place компакция вместо .filter() — та создавала новый массив
+    // КАЖДЫЙ кадр (до 500 элементов в пике при активном бою/ядерке = до
+    // 500 аллокаций записи 60 раз/сек), тут же просто сдвигаем живые
+    // элементы в начало существующего массива и один раз обрезаем хвост
+    let write = 0;
+    for (let read = 0; read < particles.length; read++) {
+      const p = particles[read];
       p.age += dt;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
@@ -221,8 +254,11 @@ export function createParticleSystem() {
       p.vz -= GRAVITY * dt;
       p.vx *= 0.95;
       p.vy *= 0.95;
+      if (p.age < p.life) {
+        particles[write++] = p;
+      }
     }
-    particles = particles.filter((p) => p.age < p.life);
+    particles.length = write;
     capParticles();
   }
 
@@ -235,11 +271,11 @@ export function createParticleSystem() {
   function draw(ctx) {
     for (const p of particles) {
       const t = 1 - p.age / p.life;
-      ctx.globalAlpha = Math.max(0, t);
-      ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y - p.z, p.size * t, 0, Math.PI * 2);
-      ctx.fill();
+      if (t <= 0) continue;
+      const radius = p.size * t;
+      const sprite = getParticleSprite(p.color);
+      ctx.globalAlpha = t;
+      ctx.drawImage(sprite, p.x - radius, p.y - p.z - radius, radius * 2, radius * 2);
     }
     ctx.globalAlpha = 1;
   }

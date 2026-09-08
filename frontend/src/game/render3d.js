@@ -3,6 +3,7 @@
 // с сервера — здесь только визуальная проекция и слой глубины (z) для отрисовки.
 
 import { drawIcon } from "./icons.js";
+import { getSprite } from "./sprites.js";
 
 const TILT = 0.72; // вертикальное сжатие пола/объектов, имитирует наклон камеры
 // синхронизировано с WALL_MAX_HP на сервере (backend/app/game/entities.py) —
@@ -59,21 +60,6 @@ function shadeColor(hex, factor) {
   return `rgb(${clamp(r)}, ${clamp(g)}, ${clamp(b)})`;
 }
 
-// линейно смешивает два hex-цвета: weight=0 -> чистый a, weight=1 -> чистый b.
-// Используется для золотистого перехода корпуса танка с ростом уровня.
-function mixColor(a, b, weight) {
-  const pa = parseInt(a.slice(1), 16);
-  const pb = parseInt(b.slice(1), 16);
-  const ar = (pa >> 16) & 0xff, ag = (pa >> 8) & 0xff, ab = pa & 0xff;
-  const br = (pb >> 16) & 0xff, bg = (pb >> 8) & 0xff, bb = pb & 0xff;
-  const r = Math.round(ar + (br - ar) * weight);
-  const g = Math.round(ag + (bg - ag) * weight);
-  const bl = Math.round(ab + (bb - ab) * weight);
-  // hex, не rgb(...) — downstream shadeColor() парсит только "#rrggbb"
-  const toHex = (v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0");
-  return `#${toHex(r)}${toHex(g)}${toHex(bl)}`;
-}
-
 // яркость грани с нормалью (nx, ny) относительно направления света: 1 —
 // грань смотрит прямо на свет, -1 — прямо от света (в тени)
 function faceLighting(nx, ny) {
@@ -105,13 +91,17 @@ export function drawCastShadow(ctx, casterX, casterY, casterHeight, maxReach = 7
 }
 
 // скин пушки — чисто косметика, синхронизировано с GUN_SKINS на сервере
-// (backend/app/game/entities.py); {турель, тёмный ствол, светлый ствол}
-const GUN_SKIN_COLORS = {
-  steel: { turret: "#334155", turretDark: "#0f172a", barrel: "#1e293b", barrelDark: "#0f172a" },
-  crimson: { turret: "#991b1b", turretDark: "#3f0d0d", barrel: "#7f1d1d", barrelDark: "#3f0d0d" },
-  gold: { turret: "#a16207", turretDark: "#422a06", barrel: "#854d0e", barrelDark: "#422a06" },
-  toxic: { turret: "#166534", turretDark: "#052e16", barrel: "#14532d", barrelDark: "#052e16" },
-  azure: { turret: "#0c4a6e", turretDark: "#082f49", barrel: "#075985", barrelDark: "#082f49" },
+// (backend/app/game/entities.py). Раньше это была палитра для процедурной
+// заливки ствола; теперь спрайты стволов даны только в фиксированных цветах
+// Kenney-пака (green/blue/red/dark/sand), поэтому скин выбирает, КАКОЙ
+// цветной спрайт ствола рисовать — ближайший по ощущению аналог исходного
+// цвета скина, а не точное совпадение hex.
+const GUN_SKIN_SPRITE_COLOR = {
+  steel: "Dark",
+  crimson: "Red",
+  gold: "Sand",
+  toxic: "Green",
+  azure: "Blue",
 };
 
 const WEAPON_BADGE_COLORS = {
@@ -121,15 +111,58 @@ const WEAPON_BADGE_COLORS = {
   ice: "#7dd3fc",
 };
 
-// временный цветовой рескин ствола, пока действует подобранное с карты
-// оружие — той же формы {turret, turretDark, barrel, barrelDark}, что и
-// GUN_SKIN_COLORS, но независимый набор: подчёркнуто "неродной" вид
-// (обугленный/промёрзший/тёмный металл ракетницы), не спутать с косметикой меню
-const PICKUP_BARREL_SKINS = {
-  flamethrower: { turret: "#451a03", turretDark: "#1c0701", barrel: "#292524", barrelDark: "#0c0a09" },
-  ice: { turret: "#0c4a6e", turretDark: "#082f49", barrel: "#7dd3fc", barrelDark: "#0369a1" },
-  rocket: { turret: "#1c1917", turretDark: "#000000", barrel: "#292524", barrelDark: "#000000" },
+// временный оверлей-тинт ствола, пока действует подобранное с карты оружие —
+// раньше был цветовой рескин процедурной заливки, теперь спрайт ствола
+// зафиксирован (см. GUN_SKIN_SPRITE_COLOR), поэтому "неродной" вид даёт
+// полупрозрачное свечение поверх спрайта тем же приёмом, что и раньше
+// (обугленный/промёрзший/дымный оттенок), просто другим механизмом
+const PICKUP_BARREL_TINT = {
+  flamethrower: "rgba(251, 146, 60, 0.55)",
+  ice: "rgba(125, 211, 252, 0.55)",
+  rocket: "rgba(41, 37, 36, 0.6)",
 };
+
+// натуральные пиксельные размеры спрайтов корпуса — ширина/высота заметно
+// отличаются (76x72 у green, 96x96 у bigRed), поэтому drawImage масштабирует
+// по большей стороне (height), чтобы tankSize однозначно определял "рост"
+// танка вдоль ствола, а не растягивал спрайт непропорционально
+const TANK_BODY_SPRITE_DIMS = {
+  green: { w: 76, h: 72 },
+  blue: { w: 76, h: 76 },
+  bigRed: { w: 96, h: 96 },
+};
+
+// натуральные пиксельные размеры спрайтов стволов — все на холсте 52px в
+// высоту (расстояние от опорной точки башни до дульного среза одинаковое
+// visually для muzzle-flash позиционирования), различается только видимая
+// толщина/форма (см. BARREL_SPRITE_LEN ниже и подбор по классам)
+const BARREL_SPRITE_DIMS = {
+  1: { w: 24, h: 52 },
+  2: { w: 16, h: 52 },
+  3: { w: 16, h: 52 },
+};
+
+// какой вариант ствола (1/2/3 из Kenney-пака) рисовать на каждый класс.
+// Проверено попиксельно (не на глаз): у всех трёх спрайтов холст 52px, но
+// граница "тонкий ствол → широкое основание" проходит на разной высоте —
+// barrel1: тонкая часть 0-32px, ШИРОКАЯ (16px); barrel2: тонкая часть тоже
+// 0-32px, но узкая (8px); barrel3: тонкая часть всего 0-12px, дальше сразу
+// массивное основание. Итого barrel2 — самый длинный и тонкий ствол (→
+// снайпер, дальний бой), barrel1 — такой же длины, но вдвое толще (→
+// brawler, ближний бой читается как "тяжелее"), barrel3 — самый короткий и
+// приземистый, с которым спутать не с чем (→ gunner, оставшийся вариант)
+const CLASS_BARREL_VARIANT = {
+  sniper: 2,
+  brawler: 1,
+  gunner: 3,
+};
+
+// мини-босс красится в tankRed_barrel1 — тот же "толстый и длинный" вариант,
+// что у brawler (не самый длинный тонкий, но самый массивный на вид среди
+// трёх), плюс рисуется парой (см. drawTank3D) — вместе это должно читаться
+// как более тяжёлое и опасное орудие, чем у любого игрока, без спрайта под
+// специальный "босс-ствол", которого в паке просто нет
+const MINIBOSS_BARREL_VARIANT = 1;
 
 // экранная высота объекта с данной игровой высотой z (0 = на полу)
 export function screenY(y, z = 0) {
@@ -138,10 +171,13 @@ export function screenY(y, z = 0) {
 
 export function drawFloor(ctx, width, height) {
   // приглушённая, чуть желчно-зелёная сталь вместо чистого сине-серого —
-  // читается более "военно", как бетонный полигон, а не аркадный неон
+  // читается более "военно", как бетонный полигон, а не аркадный неон.
+  // Заметно светлее прежнего (было #171d18..#0b0e12) — яма (почти чёрная,
+  // #050505) на старом тёмном полу читалась слабо, не выделялась как
+  // отдельная опасная зона; теперь контраст пол/яма однозначный на глаз.
   const grad = ctx.createLinearGradient(0, 0, 0, height);
-  grad.addColorStop(0, "#171d18");
-  grad.addColorStop(1, "#0b0e12");
+  grad.addColorStop(0, "#232b24");
+  grad.addColorStop(1, "#161c1a");
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
 
@@ -221,16 +257,27 @@ export function drawPitZone3D(ctx, zone, t) {
   ctx.fillStyle = getPitEdgeGradient(ctx, x, y, width, height);
   ctx.fillRect(x - 20, y - 20, width + 40, height + 40);
 
-  // редкие тусклые огоньки на дне — намёк на глубину, не яркие (это пустота,
-  // не источник света) — детерминированные позиции по seed, без Math.random()
-  const sparkCount = Math.max(2, Math.round((width * height) / 9000));
+  // тонкая пульсирующая красная кромка по контуру ямы — читается как
+  // явный сигнал "сюда нельзя", а не просто более тёмный участок пола;
+  // без неё яма была легко спутать с обычной тенью на полу издалека
+  const warnPulse = 0.5 + 0.5 * Math.sin(t * 2.4);
+  ctx.strokeStyle = `rgba(220, 38, 38, ${0.35 + warnPulse * 0.35})`;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, width, height);
+
+  // огоньки на дне — краснее и заметнее прежних нейтрально-серых, читаются
+  // как тлеющие угли на дне пропасти, а не случайные блики глубины
+  const sparkCount = Math.max(2, Math.round((width * height) / 7000));
   for (let i = 0; i < sparkCount; i++) {
     const sx = x + _rubbleRand(i * 3.7 + x * 0.01) * width;
     const sy = y + _rubbleRand(i * 5.3 + y * 0.01) * height;
-    const flicker = 0.3 + 0.3 * Math.sin(t * 2 + i * 3.1);
-    ctx.fillStyle = `rgba(56, 60, 68, ${flicker})`;
+    const flicker = 0.35 + 0.4 * Math.sin(t * 2 + i * 3.1);
+    const emberGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, 4);
+    emberGrad.addColorStop(0, `rgba(239, 68, 68, ${flicker})`);
+    emberGrad.addColorStop(1, "rgba(239, 68, 68, 0)");
+    ctx.fillStyle = emberGrad;
     ctx.beginPath();
-    ctx.arc(sx, sy, 1.5, 0, Math.PI * 2);
+    ctx.arc(sx, sy, 4, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -547,56 +594,27 @@ export function drawPickup3D(ctx, pickup, colors, t) {
   // Радиус тела всегда полный; вращение показано смещением блика/терминатора
   // света по поверхности (как у реальной вращающейся сферы), не искажением формы.
   const spin = t * 2.2 + pickup.x * 0.01;
-  const radius = isSuper ? 15 : 13;
+  const radius = isSuper ? 16 : 13;
   const highlightX = Math.cos(spin) * radius * 0.5;
   const highlightY = Math.sin(spin * 0.7) * radius * 0.35 - radius * 0.3;
 
+  // супер-пикап красится в классический янтарно-оранжевый Dragon Ball —
+  // независимо от общего "super"-цвета из PICKUP_COLORS (тот остаётся
+  // розовым для UI/бейджей), здесь это единственное узнаваемое отличие
+  const sphereColor = isSuper ? "#f6a623" : color;
+
   const grad = ctx.createRadialGradient(highlightX, highlightY, 1, 0, 0, radius);
   grad.addColorStop(0, "#ffffff");
-  grad.addColorStop(0.3, color);
-  grad.addColorStop(0.75, shadeColor(color, -0.2));
-  grad.addColorStop(1, shadeColor(color, -0.5));
+  grad.addColorStop(0.3, sphereColor);
+  grad.addColorStop(0.75, shadeColor(sphereColor, -0.2));
+  grad.addColorStop(1, shadeColor(sphereColor, -0.5));
   ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.arc(0, 0, radius, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,0.5)";
+  ctx.strokeStyle = isSuper ? "rgba(255, 214, 128, 0.7)" : "rgba(255,255,255,0.5)";
   ctx.lineWidth = 1;
   ctx.stroke();
-
-  // "как драгон болл": несколько мелких звёзд внутри стеклянной сферы (не
-  // только центральная иконка) — рисуются ДО терминатора, чтобы тень
-  // затемняла и их тоже (звёзды по-настоящему "внутри" стекла, а не
-  // наклеены поверх). Разные размер/глубина/скорость дрейфа на звезду —
-  // читается как объёмный рой, а не плоский узор.
-  if (isSuper) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(0, 0, radius, 0, Math.PI * 2);
-    ctx.clip();
-    // 7 звёзд — как на классическом шаре: одна крупная центральная + шесть
-    // помельче вокруг, отсылка к "Dragon Ball", которую попросил пользователь
-    const starSeeds = [
-      { a: 0.6, d: 0.55, sp: 0.7, sc: 0.34 },
-      { a: 2.4, d: 0.4, sp: -0.5, sc: 0.26 },
-      { a: 4.1, d: 0.62, sp: 0.9, sc: 0.3 },
-      { a: 5.3, d: 0.35, sp: -0.8, sc: 0.22 },
-      { a: 1.5, d: 0.2, sp: 0.55, sc: 0.4 },
-      { a: 3.3, d: 0.48, sp: -0.35, sc: 0.24 },
-      { a: 5.9, d: 0.58, sp: 0.65, sc: 0.28 },
-    ];
-    for (const s of starSeeds) {
-      const drift = spin * s.sp + s.a;
-      const sx = Math.cos(drift) * radius * s.d;
-      const sy = Math.sin(drift * 1.3) * radius * s.d * 0.7;
-      ctx.save();
-      ctx.translate(sx, sy);
-      ctx.globalAlpha = 0.75;
-      drawIcon(ctx, "super", "#fff7ed", radius / 12 * s.sc * 4);
-      ctx.restore();
-    }
-    ctx.restore();
-  }
 
   // терминатор (граница света/тени) скользит по сфере вслед за вращением —
   // тонкий тёмный полумесяц с той стороны, что сейчас "отвёрнута" от блика
@@ -609,13 +627,67 @@ export function drawPickup3D(ctx, pickup, colors, t) {
   ctx.fill();
   ctx.restore();
 
-  // иконка всегда видна (не пропадает) — чуть "плавает" по поверхности вслед
-  // за вращением, создавая ощущение объекта на 3D-сфере, а не наклейки
-  ctx.save();
-  ctx.translate(Math.sin(spin) * radius * 0.12, 0);
-  drawIcon(ctx, pickup.kind, "#0f172a", radius / 12);
-  ctx.restore();
+  if (isSuper) {
+    // классическая 7-звезда Dragon Ball: одна крупная 4-лучевая звезда в
+    // центре — ярко-красная с чёрной обводкой, статичная (не дрейфует и не
+    // тонет в размытых копиях), плюс 6 мелких спутников-звёзд вокруг —
+    // именно так выглядит настоящий шар с семью звёздами, а не рой пятен
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, 0, radius, 0, Math.PI * 2);
+    ctx.clip();
 
+    drawDragonStar(ctx, 0, 0, radius * 0.62);
+
+    const satellites = [
+      { a: 0.35, d: 0.62 },
+      { a: 1.1, d: 0.68 },
+      { a: 1.95, d: 0.6 },
+      { a: 2.7, d: 0.66 },
+      { a: 3.6, d: 0.62 },
+      { a: 4.6, d: 0.68 },
+    ];
+    for (const s of satellites) {
+      const sx = Math.cos(s.a) * radius * s.d;
+      const sy = Math.sin(s.a) * radius * s.d * 0.75;
+      drawDragonStar(ctx, sx, sy, radius * 0.16);
+    }
+    ctx.restore();
+  } else {
+    // иконка всегда видна (не пропадает) — чуть "плавает" по поверхности
+    // вслед за вращением, создавая ощущение объекта на 3D-сфере, а не наклейки
+    ctx.save();
+    ctx.translate(Math.sin(spin) * radius * 0.12, 0);
+    drawIcon(ctx, pickup.kind, "#0f172a", radius / 12);
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
+
+// звезда в стиле Dragon Ball — 4 остроконечных луча (не 5-конечная
+// "стандартная" звезда), ярко-красная заливка с толстой тёмной обводкой,
+// маленький блик у центра. Рисуется как самостоятельный неподвижный
+// элемент — в оригинале звёзды на шарах не крутятся отдельно от шара.
+function drawDragonStar(ctx, cx, cy, r) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.beginPath();
+  ctx.moveTo(0, -r);
+  ctx.quadraticCurveTo(r * 0.22, -r * 0.22, r, 0);
+  ctx.quadraticCurveTo(r * 0.22, r * 0.22, 0, r);
+  ctx.quadraticCurveTo(-r * 0.22, r * 0.22, -r, 0);
+  ctx.quadraticCurveTo(-r * 0.22, -r * 0.22, 0, -r);
+  ctx.closePath();
+  ctx.fillStyle = "#dc2626";
+  ctx.fill();
+  ctx.strokeStyle = "#450a0a";
+  ctx.lineWidth = Math.max(0.6, r * 0.12);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.beginPath();
+  ctx.arc(-r * 0.12, -r * 0.12, r * 0.16, 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }
 
@@ -671,6 +743,24 @@ const BULLET_PALETTE = {
 // по направлению полёта, скруглённый хвост; пулемётные трассеры остаются
 // мелкими точками намеренно (высокая скорострельность, форма не читается)
 const SHELL_KINDS = new Set(["cannon", "sniper", "brawler", "ultimate", "rocket", "ice"]);
+
+// какой спрайт пули (bullet<Color>1.png) рисовать на вид снаряда — пак даёт
+// только 5 однотонных цветов без формы под конкретное оружие, поэтому выбор
+// чисто по смыслу цвета: cannon — самый "тяжёлый" контраст (red), minigun —
+// холодная сталь (dark), sniper — уже совпадает с его голубой палитрой
+// (blue), brawler — тёплый песочный ближе к его оранжевой палитре (sand).
+// ultimate/ice сознательно делят спрайт с sniper/cannon — их узнаваемость
+// несёт сильное цветное свечение (glow) и, у ice, дополнительный морозный
+// тинт поверх (см. ниже), не сам спрайт. rocket сюда не входит — у неё
+// остаётся полностью процедурный корпус, тронутый в этой правке не был.
+const BULLET_SPRITE_KIND = {
+  cannon: "bulletRed1",
+  minigun: "bulletDark1",
+  sniper: "bulletBlue1",
+  brawler: "bulletSand1",
+  ultimate: "bulletRed1",
+  ice: "bulletBlue1",
+};
 
 // Предрендеренные спрайты glow-свечения пули: ctx.createRadialGradient() +
 // 2x addColorStop() на КАЖДУЮ пулю КАЖДЫЙ кадр — при скорострельном оружии
@@ -833,11 +923,12 @@ export function drawBullet3D(ctx, bullet, t = 0) {
   const glowAlpha = (isMinigun ? 0.35 : isUltimate ? 0.8 : isCannon ? 0.7 : 0.55) * cannonPulse;
   drawGlowSprite(ctx, palette.glow, bullet.x, py, r * glowMult, glowAlpha);
 
-  const grad = ctx.createRadialGradient(bullet.x - 2, py - 2, 0.5, bullet.x, py, r);
-  grad.addColorStop(0, palette.core[0]);
-  grad.addColorStop(0.5, palette.core[1]);
-  grad.addColorStop(1, palette.core[2]);
-  ctx.fillStyle = grad;
+  // тело пули теперь везде рисуется спрайтом (isRocket) или готовым PNG
+  // (else-ветка ниже) — обе перезаписывают fillStyle перед использованием,
+  // так что здесь достаточно line-стиля для контура ракеты (единственный,
+  // кто реально вызывает stroke() с этими значениями); createRadialGradient
+  // на каждую пулю каждый кадр раньше вычислялся тут и никогда не
+  // применялся — чистая трата на самом горячем пути рендера (десятки пуль/кадр)
   ctx.lineWidth = isMinigun ? 1 : isCannon || isUltimate ? 2 : 1.5;
   ctx.strokeStyle = palette.stroke;
 
@@ -887,28 +978,45 @@ export function drawBullet3D(ctx, bullet, t = 0) {
     ctx.lineTo(-bodyLen * 0.4, -bodyWidth * 0.55);
     ctx.stroke();
     ctx.restore();
-  } else if (isShell) {
-    // снарядная форма: вытянутый эллипс вдоль направления полёта с заострённым
-    // носом — не окружность, читается как летящий снаряд, а не точка/шарик
-    const bodyLen = r * (isUltimate ? 1.9 : 1.6);
-    const bodyWidth = r * 0.75;
+  } else {
+    // все остальные виды снарядов (раньше — процедурный вытянутый эллипс с
+    // заострённым носом или, для minigun, простая заливка круга) теперь
+    // рисуются готовым PNG-спрайтом пули (см. BULLET_SPRITE_KIND) — та же
+    // идея, что и у стволов/корпуса танка: меньше hand-drawn примитивов
+    const spriteName = BULLET_SPRITE_KIND[kind] || "bulletDark1";
+    const sprite = getSprite(spriteName);
+    const bodyLen = isMinigun ? r * 1.6 : r * (isUltimate ? 2.4 : 2.0);
     ctx.save();
     ctx.translate(bullet.x, py);
     ctx.rotate(angle);
-    ctx.beginPath();
-    ctx.moveTo(bodyLen * 0.55, 0); // остриё носа
-    ctx.quadraticCurveTo(bodyLen * 0.15, -bodyWidth, -bodyLen * 0.5, -bodyWidth * 0.7);
-    ctx.quadraticCurveTo(-bodyLen * 0.7, 0, -bodyLen * 0.5, bodyWidth * 0.7);
-    ctx.quadraticCurveTo(bodyLen * 0.15, bodyWidth, bodyLen * 0.55, 0);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+    if (sprite.complete && sprite.naturalWidth > 0) {
+      // спрайт нарисован "вверх" (см. drawTank3D) — та же +90° поправка,
+      // разворачивает вертикальную пулю вдоль текущей оси X (направление полёта)
+      const bodyWidth = bodyLen * (sprite.naturalWidth / sprite.naturalHeight);
+      ctx.rotate(Math.PI / 2);
+      ctx.drawImage(sprite, -bodyWidth / 2, -bodyLen / 2, bodyWidth, bodyLen);
+    } else {
+      // на случай если спрайт ещё не успел загрузиться — не оставляем пулю
+      // невидимой на первых кадрах, простой fallback-кружок в цвете палитры
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = palette.core[1];
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
-  } else {
-    ctx.beginPath();
-    ctx.arc(bullet.x, py, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
+
+    // морозный тинт поверх спрайта у ice — единственный вид, который делит
+    // базовый спрайт с другим (sniper/bulletBlue1) и должен отличаться на глаз
+    if (kind === "ice") {
+      ctx.save();
+      ctx.translate(bullet.x, py);
+      ctx.fillStyle = "rgba(224, 242, 254, 0.5)";
+      ctx.beginPath();
+      ctx.arc(0, 0, r * 0.7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   // тонкое пульсирующее кольцо вокруг раскалённого снаряда — усиливает
@@ -980,26 +1088,44 @@ export function drawMuzzleFlash3D(ctx, x, y, angle, strength) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
+
+  // мягкое ambient-свечение под спрайтом вспышки — без него резкий край
+  // PNG на тёмном фоне читался бы как "наклейка", а не яркая короткая вспышка
   const grad = ctx.createRadialGradient(len * 0.3, 0, 1, len * 0.3, 0, len);
-  grad.addColorStop(0, `rgba(255, 237, 199, ${0.9 * strength})`);
-  grad.addColorStop(0.5, `rgba(217, 140, 60, ${0.6 * strength})`);
+  grad.addColorStop(0, `rgba(255, 237, 199, ${0.7 * strength})`);
+  grad.addColorStop(0.5, `rgba(217, 140, 60, ${0.45 * strength})`);
   grad.addColorStop(1, "rgba(217, 140, 60, 0)");
   ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.ellipse(len * 0.3, 0, len, len * 0.45, 0, 0, Math.PI * 2);
   ctx.fill();
+
+  // спрайт вспышки (shotOrange) нарисован "вверх", основанием (точкой) внизу
+  // холста — тот же +90° разворот, что и у стволов (см. drawTank3D), плюс
+  // сдвиг так, чтобы основание легло точно в дульный срез, а не в его центр
+  const sprite = getSprite("shotOrange");
+  if (sprite.complete && sprite.naturalWidth > 0) {
+    const spriteLen = len * 1.6;
+    const spriteW = spriteLen * (sprite.naturalWidth / sprite.naturalHeight);
+    ctx.save();
+    ctx.rotate(Math.PI / 2);
+    ctx.globalAlpha = strength;
+    ctx.drawImage(sprite, -spriteW / 2, -spriteLen * 0.15, spriteW, spriteLen);
+    ctx.restore();
+  }
   ctx.restore();
 }
 
-// синхронизировано с MINIBOSS_LASER_WIDTH/MINIBOSS_LASER_RANGE на сервере
+// синхронизировано с MINIBOSS_LASER_WIDTH на сервере
 const LASER_WIDTH = 18.0;
-const LASER_RANGE = 900.0;
 
-export function drawLaserCharge3D(ctx, x, y, angle, progress) {
+export function drawLaserCharge3D(ctx, x, y, angle, progress, range) {
   // телеграф лазера мини-босса: тонкая прицельная линия, растущая по
   // толщине/яркости по мере приближения выстрела — даёт игрокам реальное
-  // окно, чтобы уйти с линии огня до того, как ударит полный луч
-  const len = LASER_RANGE;
+  // окно, чтобы уйти с линии огня до того, как ударит полный луч. Длина не
+  // константа — сервер шлёт точное расстояние до границы арены под этим
+  // углом (см. ray_distance_to_field_edge в map.py)
+  const len = range;
   const width = 2 + progress * (LASER_WIDTH - 2);
   const alpha = 0.35 + progress * 0.5;
   const pulse = 0.6 + 0.4 * Math.sin(progress * 40);
@@ -1049,19 +1175,24 @@ export function drawLaserShot3D(ctx, shot, age) {
   ctx.restore();
 }
 
-// синхронизировано с LASER_STAR_RANGE/LASER_STAR_WIDTH на сервере
-const LASER_STAR_RANGE = 380.0;
+// синхронизировано с LASER_STAR_WIDTH на сервере
 const LASER_STAR_WIDTH = 14.0;
 
 // Лазерная звезда игрока (замена старого пассивного super-баффа) — 8 лучей
-// НЕПРЕРЫВНО горят все LASER_STAR_DURATION секунд (не мгновенная вспышка,
-// как drawLaserShot3D у мини-босса), углы зафиксированы на сервере в момент
-// подбора — здесь только рендер уже готового списка углов. Переиспользует
-// эстетику лазера босса (яркое ядро + красный ореол), но веером из центра
-// танка, а не одной линией.
-export function drawLaserStar3D(ctx, x, y, angles, t) {
+// НЕПРЕРЫВНО горят весь LASER_STAR_DURATION, вращаясь на 360° (сервер
+// пересчитывает angles каждый тик — здесь только рендер уже готового
+// списка). Длина каждого луча приходит в lengths (параллельно angles) — не
+// константа, обрезана на сервере точно по границе арены под текущим углом
+// (см. ray_distance_to_field_edge в map.py), поэтому луч никогда не вылезает
+// за карту независимо от того, где стоял игрок и как далеко успел уехать.
+// Переиспользует эстетику лазера босса (яркое ядро + красный ореол), но
+// веером из центра танка, а не одной линией.
+export function drawLaserStar3D(ctx, x, y, angles, lengths, t) {
   const pulse = 0.75 + 0.25 * Math.sin(t * 14);
-  for (const angle of angles) {
+  for (let i = 0; i < angles.length; i++) {
+    const angle = angles[i];
+    const range = lengths[i] ?? 0;
+    if (range <= 0) continue;
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(angle);
@@ -1070,14 +1201,14 @@ export function drawLaserStar3D(ctx, x, y, angles, t) {
     ctx.lineWidth = LASER_STAR_WIDTH * 1.8;
     ctx.beginPath();
     ctx.moveTo(0, 0);
-    ctx.lineTo(LASER_STAR_RANGE, 0);
+    ctx.lineTo(range, 0);
     ctx.stroke();
 
     ctx.strokeStyle = `rgba(255, 241, 199, ${0.9 * pulse})`;
     ctx.lineWidth = LASER_STAR_WIDTH * 0.6;
     ctx.beginPath();
     ctx.moveTo(0, 0);
-    ctx.lineTo(LASER_STAR_RANGE, 0);
+    ctx.lineTo(range, 0);
     ctx.stroke();
 
     ctx.restore();
@@ -1091,6 +1222,51 @@ export function drawLaserStar3D(ctx, x, y, angles, t) {
   ctx.beginPath();
   ctx.arc(x, y, 16, 0, Math.PI * 2);
   ctx.fill();
+}
+
+// вспышка подбора брони — объёмная энергетическая сфера, ненадолго
+// охватывающая танк целиком (не плоское кольцо-декаль на полу, как
+// drawTeleportEffect3D) — читается как формирующийся щит, а не просто
+// цветной всплеск. Растёт от центра игрока наружу и гаснет.
+export function drawArmorShieldEffect3D(ctx, effect, age) {
+  if (age >= 1) return;
+  const { x, y } = effect;
+  const alpha = 1 - age;
+  // сфера сперва быстро раздувается (easeOut), затем держится и гаснет —
+  // не линейный рост, иначе расширение читается вяло
+  const growth = 1 - Math.pow(1 - Math.min(1, age * 2.2), 3);
+  const radius = 14 + growth * 30;
+
+  ctx.save();
+  ctx.translate(x, y);
+
+  // полупрозрачная объёмная заливка сферы — радиальный градиент с ярким
+  // ободом (энергетическая оболочка ярче в центре толщины стенки, не в ядре)
+  const shellGrad = ctx.createRadialGradient(0, 0, radius * 0.55, 0, 0, radius);
+  shellGrad.addColorStop(0, "rgba(56, 189, 248, 0)");
+  shellGrad.addColorStop(0.75, `rgba(56, 189, 248, ${0.22 * alpha})`);
+  shellGrad.addColorStop(1, `rgba(224, 242, 254, ${0.5 * alpha})`);
+  ctx.fillStyle = shellGrad;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, radius, radius * TILT, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // яркий чёткий контур оболочки
+  ctx.strokeStyle = `rgba(186, 230, 253, ${0.85 * alpha})`;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, radius, radius * TILT, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // пара широтных колец поперёк сферы — намёк на объём/3D-глобус, а не
+  // плоский диск, без полноценного 3D-каркаса
+  ctx.strokeStyle = `rgba(125, 211, 252, ${0.4 * alpha})`;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, radius * 0.7, radius * TILT * 0.35, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.restore();
 }
 
 export function drawTeleportEffect3D(ctx, effect, age) {
@@ -1311,27 +1487,38 @@ export function drawNukeWarning3D(ctx, nuke, t) {
   }
 }
 
+// 5 последовательных PNG-кадров (explosion1..5.png) вместо процедурного
+// radial-gradient всплеска — Kenney-набор уже даёт настоящую форму вспышки
+// (звезда-корона на пике → рассыпающиеся угли-шарики к концу), кадры не
+// нужно смешивать/интерполировать, просто показывать по очереди по age
+const EXPLOSION_FRAME_COUNT = 5;
+
 export function drawExplosion3D(ctx, explosion, age) {
   // age: 0..1, прогресс расширения ударной волны после взрыва
   if (age >= 1) return;
   const radius = explosion.radius * (0.3 + age * 0.9);
   const alpha = 1 - age;
+  const frame = Math.min(EXPLOSION_FRAME_COUNT - 1, Math.floor(age * EXPLOSION_FRAME_COUNT));
+  const sprite = getSprite(`explosion${frame + 1}`);
 
-  const grad = ctx.createRadialGradient(explosion.x, explosion.y, 0, explosion.x, explosion.y, radius);
-  grad.addColorStop(0, `rgba(255, 233, 194, ${0.8 * alpha})`);
-  grad.addColorStop(0.4, `rgba(217, 140, 60, ${0.6 * alpha})`);
-  grad.addColorStop(0.7, `rgba(194, 65, 40, ${0.35 * alpha})`);
-  grad.addColorStop(1, "rgba(194, 65, 40, 0)");
-  ctx.fillStyle = grad;
+  // мягкое ambient-свечение под спрайтом — усиливает читаемость на светлом
+  // полу/стенах, спрайт сам по себе не даёт глобального засвета сцены
+  const glow = ctx.createRadialGradient(explosion.x, explosion.y, 0, explosion.x, explosion.y, radius);
+  glow.addColorStop(0, `rgba(255, 233, 194, ${0.5 * alpha})`);
+  glow.addColorStop(0.6, `rgba(217, 140, 60, ${0.3 * alpha})`);
+  glow.addColorStop(1, "rgba(217, 140, 60, 0)");
+  ctx.fillStyle = glow;
   ctx.beginPath();
   ctx.arc(explosion.x, explosion.y, radius, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 * alpha})`;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(explosion.x, explosion.y, radius, 0, Math.PI * 2);
-  ctx.stroke();
+  if (sprite.complete && sprite.naturalWidth > 0) {
+    const size = radius * 2.2; // спрайт с полями внутри canvas — чуть крупнее radius, чтобы корона не обрезалась
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(sprite, explosion.x - size / 2, explosion.y - size / 2, size, size);
+    ctx.restore();
+  }
 }
 
 export function drawNukeExplosion3D(ctx, explosion, age) {
@@ -1541,105 +1728,37 @@ export function computeTankSize(baseTankSize, level, isMiniboss, hasSuper, super
   return isMiniboss ? baseTankSize * 3 : baseTankSize * (1 + levelProgress * 0.22) * superGrow;
 }
 
+// длина ствола в пикселях на экране — определяет, где заканчивается спрайт
+// относительно опорной точки башни (turret pivot), и куда должна встать
+// вспышка выстрела/пробитие. Раньше это были подобранные на глаз константы
+// под процедурную геометрию; теперь это реальная высота спрайта ствола
+// (BARREL_SPRITE_DIMS[variant].h), отмасштабированная тем же коэффициентом,
+// что и сам спрайт при отрисовке (см. barrelScale в drawTank3D) — см. ниже.
+function barrelVariantFor(tankClass) {
+  return CLASS_BARREL_VARIANT[tankClass] || 2; // пушка по умолчанию — средний ствол
+}
+
+// во сколько раз спрайт ствола масштабируется относительно его исходного
+// пиксельного размера при данном tankSize — ОДИН и тот же коэффициент px/unit
+// для всех трёх вариантов (не подгоняем ширину под фиксированную цель!) —
+// иначе натуральная разница в ширине спрайтов (24 vs 16px), которая и несёт
+// "потолще/потоньше" между классами, просто стиралась бы масштабированием.
+// Опорная точка — высота спрайта относительно tankSize: тот же зрительный
+// масштаб, что был у прежней процедурной длины (tankSize/2 + N)
+function barrelSpriteScale(tankSize, variant) {
+  const dims = BARREL_SPRITE_DIMS[variant] || BARREL_SPRITE_DIMS[2];
+  const targetLen = tankSize / 2 + 10; // те же пропорции, что у прежней процедурной длины
+  return targetLen / dims.h;
+}
+
 export function getMuzzleBarrelLength(tankSize, tankClass, isMiniboss) {
-  if (isMiniboss) return tankSize / 2 + 10;
-  if (tankClass === "sniper") return tankSize / 2 + 20;
-  if (tankClass === "brawler") return tankSize / 2 + 4;
-  if (tankClass === "gunner") return tankSize / 2 + 6;
-  return tankSize / 2 + 8; // cannon по умолчанию
-}
-
-// Один сегмент ствола: объёмный цилиндр вместо плоского fillRect — тёмная
-// обводка по контуру + светлый блик вдоль верхней трети (имитирует то же
-// направленное освещение, что уже используют корпус/башня танка), и мягкая
-// тень под стволом на башне. Раньше ствол был буквально залитой полосой
-// без контура/светотени — на любом фоне читался как плоская линия, а не
-// часть объёмной модели.
-function drawBarrelSegment(ctx, xStart, len, width, skin, yOffset = -width / 2, shade = 1, tapered = true) {
-  const y = yOffset;
-  const yMid = y + width / 2;
-
-  // контактная тень на башне под стволом
-  ctx.fillStyle = "rgba(0,0,0,0.3)";
-  ctx.fillRect(xStart, y + width * 0.15, len, width);
-
-  // gunner (вращающийся барабан из тонких стволов) намеренно остаётся
-  // простым прямым сегментом — при width~3px коническая форма/кольца-муфты
-  // не читаются, только тратят кадр; и это единственный класс, чей барабан
-  // просили не трогать при доработке дизайна остальных стволов
-  if (!tapered) {
-    const grad = ctx.createLinearGradient(0, y, 0, y + width);
-    grad.addColorStop(0, shadeColor(skin.barrel, 0.35 * shade));
-    grad.addColorStop(0.35, skin.barrel);
-    grad.addColorStop(1, shadeColor(skin.barrelDark, -0.15));
-    ctx.fillStyle = grad;
-    ctx.fillRect(xStart, y, len, width);
-    ctx.strokeStyle = "rgba(0,0,0,0.55)";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(xStart, y, len, width);
-    return;
-  }
-
-  // основание у башни заметно шире дула — конический ствол вместо плоской
-  // прямоугольной палки одинаковой толщины по всей длине; раньше ствол
-  // выглядел как приклеенный сверху прямоугольник без объёма и посадки
-  const baseWidth = width * 1.35;
-  const muzzleWidth = width * 0.82;
-  const taperLen = len * 0.4; // сужение происходит на первых 40% длины, дальше ствол ровный
-
-  ctx.beginPath();
-  ctx.moveTo(xStart, yMid - baseWidth / 2);
-  ctx.lineTo(xStart + taperLen, yMid - muzzleWidth / 2);
-  ctx.lineTo(xStart + len, yMid - muzzleWidth / 2);
-  ctx.lineTo(xStart + len, yMid + muzzleWidth / 2);
-  ctx.lineTo(xStart + taperLen, yMid + muzzleWidth / 2);
-  ctx.lineTo(xStart, yMid + baseWidth / 2);
-  ctx.closePath();
-
-  const grad = ctx.createLinearGradient(0, yMid - baseWidth / 2, 0, yMid + baseWidth / 2);
-  grad.addColorStop(0, shadeColor(skin.barrel, 0.4 * shade));
-  grad.addColorStop(0.3, skin.barrel);
-  grad.addColorStop(0.55, shadeColor(skin.barrelDark, 0.05));
-  grad.addColorStop(1, shadeColor(skin.barrelDark, -0.2));
-  ctx.fillStyle = grad;
-  ctx.fill();
-  ctx.strokeStyle = "rgba(0,0,0,0.55)";
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // узкий яркий блик по верхней грани — читается как круглый металлический
-  // цилиндр, а не плоская закрашенная лента
-  ctx.strokeStyle = shadeColor(skin.barrel, 0.55 * shade);
-  ctx.lineWidth = Math.max(1, muzzleWidth * 0.12);
-  ctx.beginPath();
-  ctx.moveTo(xStart + taperLen * 0.6, yMid - muzzleWidth * 0.28);
-  ctx.lineTo(xStart + len - muzzleWidth * 0.3, yMid - muzzleWidth * 0.28);
-  ctx.stroke();
-
-  // пара колец-муфт вдоль ровного участка ствола — механическая деталь,
-  // без них длинный ствол читался как гладкая безликая труба
-  const ringCount = len - taperLen > width * 2.2 ? 2 : 1;
-  for (let i = 1; i <= ringCount; i++) {
-    const rx = xStart + taperLen + ((len - taperLen) * i) / (ringCount + 1);
-    ctx.fillStyle = shadeColor(skin.barrelDark, -0.25);
-    ctx.fillRect(rx - muzzleWidth * 0.06, yMid - muzzleWidth / 2 - 0.5, muzzleWidth * 0.12, muzzleWidth + 1);
-  }
-}
-
-// муфта/дульный тормоз на конце ствола — короткая утолщённая деталь с
-// собственным объёмным градиентом, читается как настоящая механическая
-// часть, а не просто более тёмный прямоугольник поверх линии
-function drawMuzzleCollar(ctx, xCenter, radius, skin, yOffset = 0) {
-  const grad = ctx.createRadialGradient(xCenter - 1, yOffset - 1, 0.4, xCenter, yOffset, radius);
-  grad.addColorStop(0, shadeColor(skin.turret, 0.25));
-  grad.addColorStop(1, skin.turretDark);
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.arc(xCenter, yOffset, radius, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(0,0,0,0.5)";
-  ctx.lineWidth = 1;
-  ctx.stroke();
+  const variant = isMiniboss ? MINIBOSS_BARREL_VARIANT : barrelVariantFor(tankClass);
+  const dims = BARREL_SPRITE_DIMS[variant] || BARREL_SPRITE_DIMS[2];
+  const scale = barrelSpriteScale(tankSize, variant);
+  // спрайт нарисован основанием у turret pivot и дульным срезом у верхнего
+  // края холста (см. drawTank3D) — полная высота спрайта в масштабе и есть
+  // расстояние от центра башни до дула
+  return dims.h * scale;
 }
 
 export function drawTank3D(
@@ -1721,37 +1840,13 @@ export function drawTank3D(
   ctx.fillStyle = "rgba(0,0,0,0.4)";
   ctx.fillRect(x - half + shadowDx, y - half + shadowDy, tankSize, tankSize);
 
-  let bodyColor, bodyColorDark, bodyColorLight;
-  if (isMiniboss) {
-    bodyColor = "#991b1b";
-    bodyColorDark = "#450a0a";
-    bodyColorLight = "#dc2626";
-  } else if (isMe) {
-    bodyColor = "#22c55e";
-    bodyColorDark = "#15803d";
-    bodyColorLight = "#4ade80";
-  } else {
-    bodyColor = "#38bdf8";
-    bodyColorDark = "#0369a1";
-    bodyColorLight = "#7dd3fc";
-  }
-
-  // с ростом уровня фракционный цвет постепенно вытесняется золотом —
-  // видно издалека, кто прокачан, даже без чтения цифры уровня
-  if (levelProgress > 0) {
-    bodyColor = mixColor(bodyColor, "#facc15", levelProgress * 0.75);
-    bodyColorDark = mixColor(bodyColorDark, "#92400e", levelProgress * 0.75);
-    bodyColorLight = mixColor(bodyColorLight, "#fef08a", levelProgress * 0.75);
-  }
-
-  // супер-бафф красит корпус в яркое золото почти целиком — сильнее и
-  // однозначнее уровневого подмешивания, сам танк выглядит "заряженным",
-  // а не просто светится снаружи неизменный цветной квадрат
-  if (hasSuper) {
-    bodyColor = mixColor(bodyColor, "#fde047", 0.85);
-    bodyColorDark = mixColor(bodyColorDark, "#b45309", 0.85);
-    bodyColorLight = mixColor(bodyColorLight, "#fef9c3", 0.85);
-  }
+  // раньше "золочение" с ростом уровня/супер-баффа подмешивалось прямо в
+  // цвет процедурного корпуса (mixColor к bodyColor); спрайты тела фиксированы
+  // по цвету (зелёный/синий/красный) и подмешать в них золото так же нельзя —
+  // вместо этого золотой прогресс уровня и супер-бафф рисуются отдельным
+  // полупрозрачным оверлеем ПОВЕРХ спрайта через "source-atop" (красит только
+  // непрозрачные пиксели спрайта, не выходит за его силуэт прямоугольником)
+  const goldOverlayAlpha = hasSuper ? 0.6 : levelProgress > 0 ? levelProgress * 0.45 : 0;
 
   // угрожающее пульсирующее свечение вокруг мини-босса — виден издалека.
   // Двухслойное: медленный широкий пульс "присутствия" + быстрый узкий
@@ -1797,103 +1892,40 @@ export function drawTank3D(
   ctx.save();
   ctx.translate(x, 0);
 
-  // гусеницы по бокам корпуса — раньше корпус был просто плоским квадратом,
-  // без них силуэт не читался как танк. Рисуются под корпусом, чуть выступая
-  // по бокам, с видимыми опорными катками поверх ленты — так гусеница
-  // читается как настоящая механическая деталь "сбоку", а не гладкая полоса.
-  const trackWidth = tankSize * 0.2;
-  const trackInset = half * 0.08;
-  const trackTop = topY - half - 3;
-  const trackHeight = tankSize + 6;
+  // корпус — теперь спрайт Kenney (tankBody_green/blue/bigRed уже включает
+  // гусеницы по бокам, отдельный слой tracksDouble/tracksSmall не нужен,
+  // проверено визуально по пикселям спрайта), а не процедурные грани.
+  // Спрайт нарисован лицом "вверх" (Kenney top-down конвенция) и здесь не
+  // вращается вместе с башней — корпус в этой игре всегда axis-aligned,
+  // поворачивается только турель (angle применяется отдельно ниже к башне).
+  const bodySpriteName = isMiniboss ? "tankBody_bigRed" : isMe ? "tankBody_green" : "tankBody_blue";
+  const bodyDims = isMiniboss
+    ? TANK_BODY_SPRITE_DIMS.bigRed
+    : isMe
+    ? TANK_BODY_SPRITE_DIMS.green
+    : TANK_BODY_SPRITE_DIMS.blue;
+  const bodySprite = getSprite(bodySpriteName);
+  // масштаб по высоте спрайта — если рисовать оба измерения от одного и
+  // того же tankSize при неквадратном спрайте (green 76x72), картинка
+  // сплющится; вместо этого высота = tankSize, ширина следует натуральному
+  // аспекту спрайта, тем же приёмом, что и у barrel-спрайтов ниже
+  const bodyDrawH = tankSize;
+  const bodyDrawW = tankSize * (bodyDims.w / bodyDims.h);
+  if (bodySprite.complete && bodySprite.naturalWidth > 0) {
+    ctx.drawImage(bodySprite, -bodyDrawW / 2, topY - bodyDrawH / 2, bodyDrawW, bodyDrawH);
 
-  // сама гусеничная лента — тёмная, со скруглёнными "барабанами" на концах
-  ctx.fillStyle = "#1c1f18";
-  drawRoundedRect(ctx, -half - trackWidth + trackInset, trackTop, trackWidth, trackHeight, trackWidth / 2);
-  ctx.fill();
-  drawRoundedRect(ctx, half - trackInset, trackTop, trackWidth, trackHeight, trackWidth / 2);
-  ctx.fill();
-
-  // тонкий металлический блик по внешнему краю ленты — читается как рант
-  // катка, видимый сбоку, вместо плоского чёрного прямоугольника
-  ctx.strokeStyle = "rgba(255,255,255,0.08)";
-  ctx.lineWidth = 1;
-  drawRoundedRect(ctx, -half - trackWidth + trackInset, trackTop, trackWidth, trackHeight, trackWidth / 2);
-  ctx.stroke();
-  drawRoundedRect(ctx, half - trackInset, trackTop, trackWidth, trackHeight, trackWidth / 2);
-  ctx.stroke();
-
-  // опорные катки — ряд кружков поверх ленты, классический силуэт гусеницы
-  // "вид сбоку"; каждый со своим объёмным градиентом, а не плоской заливкой
-  const wheelR = trackWidth * 0.36;
-  const wheelCount = Math.max(3, Math.round(tankSize / (wheelR * 2.6)));
-  for (let i = 0; i < wheelCount; i++) {
-    const wy = trackTop + wheelR + 2 + (i * (trackHeight - wheelR * 2 - 4)) / Math.max(1, wheelCount - 1);
-    for (const wx of [-half - trackWidth / 2 + trackInset, half + trackWidth / 2 - trackInset]) {
-      const wheelGrad = ctx.createRadialGradient(wx - wheelR * 0.3, wy - wheelR * 0.3, 0.5, wx, wy, wheelR);
-      wheelGrad.addColorStop(0, "#4b5157");
-      wheelGrad.addColorStop(1, "#0f1216");
-      ctx.fillStyle = wheelGrad;
-      ctx.beginPath();
-      ctx.arc(wx, wy, wheelR, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(0,0,0,0.5)";
-      ctx.lineWidth = 1;
-      ctx.stroke();
+    // золотой прогресс уровня / супер-бафф — тинт "source-atop" красит
+    // только уже нарисованные непрозрачные пиксели спрайта (силуэт танка),
+    // а не весь bounding box, поэтому не выходит квадратом за пределы корпуса
+    if (goldOverlayAlpha > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = "source-atop";
+      ctx.globalAlpha = goldOverlayAlpha;
+      ctx.fillStyle = "#facc15";
+      ctx.fillRect(-bodyDrawW / 2, topY - bodyDrawH / 2, bodyDrawW, bodyDrawH);
+      ctx.restore();
     }
   }
-
-  // надгусеничные полки — корпус нависает над лентой гусеницы своей тенью,
-  // классический силуэт танка "сбоку" вместо корпуса, торчащего вровень
-  // с катками. Тонкая тёмная кромка поверх верхней части каждой гусеницы.
-  const fenderShade = shadeColor(bodyColorDark, -0.25);
-  ctx.fillStyle = fenderShade;
-  ctx.fillRect(-half - trackWidth + trackInset - 1, trackTop - 1, trackWidth + 2, 5);
-  ctx.fillRect(half - trackInset - 1, trackTop - 1, trackWidth + 2, 5);
-
-  // боковые грани корпуса, направленно освещённые — южная (низ) и восточная
-  // (правый бок), каждая своим оттенком по faceLighting, вместо одного
-  // плоского bodyColorDark на всю боковину
-  const bodySouthLight = faceLighting(0, 1);
-  const bodyEastLight = faceLighting(1, 0);
-
-  ctx.fillStyle = shadeColor(bodyColorDark, bodySouthLight * 0.2);
-  ctx.beginPath();
-  ctx.moveTo(-half, y + half);
-  ctx.lineTo(half, y + half);
-  ctx.lineTo(half, topY + half);
-  ctx.lineTo(-half, topY + half);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = shadeColor(bodyColorDark, bodyEastLight * 0.2);
-  ctx.fillRect(half - 3, topY - half, 3, tankSize);
-
-  // верхняя грань корпуса — скошенные передние углы (не идеальный квадрат)
-  // читаются как броневой лист, а не примитивная коробка; светлее с той
-  // стороны, что обращена к источнику света
-  const bodyTopLight = faceLighting(0, -1);
-  const bodyGrad = ctx.createLinearGradient(-half, topY - half, half, topY + half);
-  bodyGrad.addColorStop(0, shadeColor(bodyColorLight, bodyTopLight * 0.2));
-  bodyGrad.addColorStop(1, shadeColor(bodyColor, bodyTopLight * 0.15));
-  ctx.fillStyle = bodyGrad;
-  const chamfer = tankSize * 0.22;
-  ctx.beginPath();
-  ctx.moveTo(-half + chamfer, topY - half);
-  ctx.lineTo(half - chamfer, topY - half);
-  ctx.lineTo(half, topY - half + chamfer);
-  ctx.lineTo(half, topY + half);
-  ctx.lineTo(-half, topY + half);
-  ctx.lineTo(-half, topY - half + chamfer);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = shadeColor(bodyColorDark, 0.1);
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // центральная броневая накладка — панель поверх корпуса вдоль продольной
-  // оси, добавляет силуэту деталь без нагромождения лишней геометрии
-  ctx.fillStyle = shadeColor(bodyColorDark, 0.15);
-  ctx.fillRect(-half * 0.35, topY - half + 3, half * 0.7, tankSize - 6);
 
   if (hasSlow) {
     // "закован в лёд": ледяной оттенок поверх корпуса + тонкий кристаллический
@@ -1942,30 +1974,19 @@ export function drawTank3D(
   }
 
   if (hasArmor) {
-    // броня: раньше — плоская цветная рамка (strokeRect), убрано по просьбе —
-    // теперь шестигранная "бронеплитная" насечка по периметру корпуса + мягкое
-    // дышащее свечение, читается как реальная броневая обшивка, а не декор-рамка
+    // броня: раньше — шестигранная бронеплитная насечка поверх процедурного
+    // корпуса; теперь корпус сам по себе спрайт с реальной текстурой, и
+    // такая мелкая деталь на нём уже не нужна для "объёма" — упрощено до
+    // мягкого дышащего контура-свечения по силуэту корпуса, читается как
+    // энергощит поверх брони, не спорит с текстурой спрайта под ним
     const armorPulse = 0.6 + 0.4 * Math.sin((t ?? 0) * 5);
     ctx.save();
-    ctx.shadowColor = "rgba(56, 189, 248, 0.6)";
-    ctx.shadowBlur = 6 + armorPulse * 4;
-    ctx.strokeStyle = `rgba(125, 211, 252, ${0.55 + armorPulse * 0.25})`;
-    ctx.lineWidth = 1.6;
-    const plateCount = 4;
-    for (let i = 0; i < plateCount; i++) {
-      const px0 = -half + (i / plateCount) * tankSize;
-      const px1 = -half + ((i + 1) / plateCount) * tankSize - 2;
-      // короткие насечки-заклёпки вдоль верхней и нижней кромки корпуса,
-      // а не одна замкнутая рамка — читается как ряд бронеплит, а не контур
-      ctx.beginPath();
-      ctx.moveTo(px0 + 1, topY - half - 1);
-      ctx.lineTo(px1, topY - half - 1);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(px0 + 1, topY + half + 1);
-      ctx.lineTo(px1, topY + half + 1);
-      ctx.stroke();
-    }
+    ctx.shadowColor = "rgba(56, 189, 248, 0.7)";
+    ctx.shadowBlur = 7 + armorPulse * 5;
+    ctx.strokeStyle = `rgba(125, 211, 252, ${0.5 + armorPulse * 0.3})`;
+    ctx.lineWidth = 2;
+    drawRoundedRect(ctx, -half - 2, topY - half - 2, tankSize + 4, tankSize + 4, tankSize * 0.18);
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -2015,37 +2036,47 @@ export function drawTank3D(
 
   ctx.rotate(angle);
   // отдача: ствол на короткое время "уезжает" назад при выстреле — kickback
-  // затухает от 1 (сразу после выстрела) до 0, создаёт ощущение мощности
+  // затухает от 1 (сразу после выстрела) до 0, создаёт ощущение мощности.
+  // Раньше сдвигался xStart процедурного сегмента, теперь тот же пиксельный
+  // сдвиг применяется к translate() перед отрисовкой спрайта ствола.
   const barrelPullback = -kickback * 5;
-  // скин пушки — чисто косметический выбор из меню, применяется только к
-  // обычным игрокам (мини-босс всегда красный, это индикатор угрозы, а не
-  // персонализация)
-  // рескин ствола под подобранное оружие с карты (fire/rocket/ice) — цветовой
-  // слой ПОВЕРХ обычного скина класса, а не замена формы: снайпер остаётся
-  // длинным тонким стволом, brawler — двойным, и т.д., просто в другом цвете +
-  // с доп. свечением на срезе. Независим от GUN_SKIN_COLORS (косметика меню) —
-  // подобранное оружие временное и должно быть видно поверх любого скина.
-  const baseSkin = GUN_SKIN_COLORS[gunSkin] || GUN_SKIN_COLORS.steel;
-  const skin =
-    pickupWeaponActive && PICKUP_BARREL_SKINS[weapon]
-      ? PICKUP_BARREL_SKINS[weapon]
-      : baseSkin;
-  const turretGrad = ctx.createRadialGradient(-3, -3, 1, 0, 0, tankSize / 3);
-  turretGrad.addColorStop(0, isMiniboss ? "#7f1d1d" : skin.turret);
-  turretGrad.addColorStop(1, isMiniboss ? "#1a0505" : skin.turretDark);
-  ctx.fillStyle = turretGrad;
-  ctx.beginPath();
-  ctx.arc(0, 0, tankSize / 3, 0, Math.PI * 2);
-  ctx.fill();
+
+  // цвет спрайта ствола: скин из меню (gunSkin) выбирает цветовую линейку
+  // Kenney-пака под турель (GUN_SKIN_SPRITE_COLOR), мини-босс всегда красный
+  // вне зависимости от скина — красный тут индикатор угрозы, а не косметика
+  const spriteColorName = isMiniboss ? "Red" : GUN_SKIN_SPRITE_COLOR[gunSkin] || "Dark";
+  const barrelVariant = isMiniboss ? MINIBOSS_BARREL_VARIANT : barrelVariantFor(player.tank_class);
+  const barrelDims = BARREL_SPRITE_DIMS[barrelVariant];
+  const barrelColorPrefix = { Green: "tankGreen", Blue: "tankBlue", Red: "tankRed", Dark: "tankDark", Sand: "tankSand" }[
+    spriteColorName
+  ];
+  const barrelSprite = getSprite(`${barrelColorPrefix}_barrel${barrelVariant}`);
+
+  // спрайт танка нарисован "вверх" (сторона -Y), а игровой angle=0 значит
+  // "вправо" (+X), см. turret_angle = atan2(dy,dx) на сервере и
+  // TankPreview.jsx (angle=0 → "ствол смотрит строго вправо"); мы уже
+  // повернули контекст на angle через ctx.rotate(angle) выше, поэтому здесь
+  // достаточно довернуть ещё на +90°, чтобы "верх спрайта" совпал с "текущим
+  // +X после поворота" — проверено визуально скриншотом (см. отчёт)
+  const spriteForwardFix = Math.PI / 2;
+  const barrelScale = barrelSpriteScale(tankSize, barrelVariant);
+  const barrelDrawW = barrelDims.w * barrelScale;
+  const barrelDrawH = barrelDims.h * barrelScale;
 
   if (isMiniboss) {
     // мини-босс отличим не только размером/цветом: спаренные стволы (он
-    // реально бьёт несколькими типами атак) + вращающийся сенсор-кольцо на
-    // башне, читается как настоящая боевая машина, а не увеличенный игрок
-    const barrelLen = tankSize / 2 + 10;
-    const bossSkin = { barrel: "#3f0d0d", barrelDark: "#1a0505", turret: "#7f1d1d", turretDark: "#1a0505" };
-    drawBarrelSegment(ctx, barrelPullback, barrelLen, 5, bossSkin, -7.5);
-    drawBarrelSegment(ctx, barrelPullback, barrelLen, 5, bossSkin, 2);
+    // реально бьёт несколькими типами атак) — два экземпляра одного спрайта
+    // бок о бок, вместо одной процедурной пары сегментов
+    const offset = barrelDrawW * 0.55;
+    for (const oy of [-offset, offset]) {
+      ctx.save();
+      ctx.translate(barrelPullback, oy);
+      ctx.rotate(spriteForwardFix);
+      if (barrelSprite.complete && barrelSprite.naturalWidth > 0) {
+        ctx.drawImage(barrelSprite, -barrelDrawW / 2, -barrelDrawH, barrelDrawW, barrelDrawH);
+      }
+      ctx.restore();
+    }
 
     const spinAngle = (t ?? 0) * 3;
     ctx.strokeStyle = "rgba(248, 113, 113, 0.7)";
@@ -2060,89 +2091,52 @@ export function drawTank3D(
     ctx.beginPath();
     ctx.arc(0, 0, 3, 0, Math.PI * 2);
     ctx.fill();
-  } else if (player.tank_class === "sniper") {
-    // снайпер: длинный тонкий ствол — читается как дальнобойное оружие.
-    // Объёмный (не плоский fillRect): тёмная обводка по контуру + светлый
-    // блик вдоль верхней грани, как у настоящего металлического цилиндра.
-    const barrelLen = tankSize / 2 + 20;
-    const w = 5;
-    drawBarrelSegment(ctx, barrelPullback, barrelLen, w, skin);
-    // дульный тормоз на конце — короткая утолщённая муфта
-    drawMuzzleCollar(ctx, barrelPullback + barrelLen - 3, 4.5, skin);
-  } else if (player.tank_class === "brawler") {
-    // ближний бой: двойная пушка бок о бок — короче и толще одиночного ствола
-    const barrelLen = tankSize / 2 + 4;
-    drawBarrelSegment(ctx, barrelPullback, barrelLen, 6, skin, -7.5);
-    drawBarrelSegment(ctx, barrelPullback, barrelLen, 6, skin, 1.5);
-    drawMuzzleCollar(ctx, barrelPullback + barrelLen - 2, 4, skin, -4.5);
-    drawMuzzleCollar(ctx, barrelPullback + barrelLen - 2, 4, skin, 4.5);
-  } else if (player.tank_class === "gunner") {
-    // пулемёт: вращающийся барабан из нескольких стволов (как миниган) —
-    // вращается быстрее при недавнем выстреле (используем kickback как
-    // индикатор активной стрельбы), иначе крутится медленно на холостом ходу
-    const barrelLen = tankSize / 2 + 6;
-    const spin = (t ?? 0) * (4 + kickback * 14);
-    const barrelCount = 4;
-    for (let i = 0; i < barrelCount; i++) {
-      const a = spin + (i / barrelCount) * Math.PI * 2;
-      const oy = Math.sin(a) * 4;
-      // стволы дальше "от камеры" (меньший cos) чуть темнее и тоньше —
-      // простое псевдо-3D расслоение барабана, а не плоский набор одинаковых полос
-      const depthShade = 0.4 + 0.6 * (0.5 + 0.5 * Math.cos(a));
-      drawBarrelSegment(ctx, barrelPullback, barrelLen, 3.2, skin, oy - 1.6, depthShade, false);
-
-      // искра на дульном срезе того ствола, что сейчас проходит через ось
-      // стрельбы (верхняя точка вращения) — только пока идёт активная
-      // стрельба (kickback>0), читается как реально стреляющий барабан,
-      // а не просто декоративно крутящиеся стволы
-      if (kickback > 0.15 && Math.cos(a) > 0.85) {
-        const sparkAlpha = kickback * (0.4 + 0.6 * Math.abs(Math.cos(a)));
-        const sparkGrad = ctx.createRadialGradient(
-          barrelPullback + barrelLen,
-          oy,
-          0,
-          barrelPullback + barrelLen,
-          oy,
-          5
-        );
-        sparkGrad.addColorStop(0, `rgba(255, 244, 214, ${sparkAlpha})`);
-        sparkGrad.addColorStop(1, `rgba(255, 200, 120, 0)`);
-        ctx.fillStyle = sparkGrad;
-        ctx.beginPath();
-        ctx.arc(barrelPullback + barrelLen, oy, 5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    // муфта барабана у основания — скрывает точки схождения стволов, с
-    // объёмным градиентом вместо плоской заливки
-    const collarGrad = ctx.createRadialGradient(barrelPullback + 2, -2, 0.5, barrelPullback + 4, 0, 6);
-    collarGrad.addColorStop(0, skin.turret);
-    collarGrad.addColorStop(1, skin.turretDark);
-    ctx.fillStyle = collarGrad;
-    ctx.beginPath();
-    ctx.arc(barrelPullback + 4, 0, 5.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,0.5)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
   } else {
-    drawBarrelSegment(ctx, barrelPullback, tankSize / 2 + 8, 6, skin);
-    drawMuzzleCollar(ctx, barrelPullback + tankSize / 2 + 8 - 3, 4, skin);
+    // снайпер/brawler/gunner/пушка по умолчанию — теперь один и тот же путь
+    // отрисовки, различаются только тем, какой спрайт ствола выбран
+    // (CLASS_BARREL_VARIANT): длинный тонкий barrel2 у снайпера, такой же
+    // длины, но вдвое толще barrel1 у brawler (тот теряет свой прежний
+    // двойной ствол — отдельного спрайта под double-barrel в паке нет,
+    // решили не городить фейковую пару из двух наложенных спрайтов ради
+    // этого класса), короткий приземистый barrel3 у gunner (вращающийся
+    // барабан на 4 стволика убран целиком — просили заменить на обычный
+    // одиночный спрайт, как у остальных классов)
+    ctx.save();
+    ctx.translate(barrelPullback, 0);
+    ctx.rotate(spriteForwardFix);
+    if (barrelSprite.complete && barrelSprite.naturalWidth > 0) {
+      ctx.drawImage(barrelSprite, -barrelDrawW / 2, -barrelDrawH, barrelDrawW, barrelDrawH);
+    }
+    ctx.restore();
   }
 
-  // свечение на срезе рескинутого ствола — уголёк/изморозь на конце, чтобы
-  // подобранное оружие читалось однозначно даже когда сама смена цвета
-  // ствола не так заметна на маленьком масштабе танка
-  if (pickupWeaponActive && PICKUP_BARREL_SKINS[weapon]) {
-    const glowLen = getMuzzleBarrelLength(tankSize, player.tank_class, isMiniboss);
+  // оверлей-тинт ствола под подобранное с карты оружие (fire/rocket/ice) —
+  // раньше был цветовой рескин процедурной заливки самого ствола, сейчас
+  // спрайт стволов зафиксирован по цвету, поэтому вместо подмены картинки
+  // рисуем полупрозрачное свечение того же оттенка поверх дульной части
+  // (тем же приёмом, что и "свечение на срезе" ниже, но шире — покрывает
+  // весь видимый ствол, не только кончик, иначе на длинном снайперском
+  // стволе тинт был почти незаметен)
+  if (pickupWeaponActive && PICKUP_BARREL_TINT[weapon]) {
+    const barrelLen = getMuzzleBarrelLength(tankSize, player.tank_class, isMiniboss);
+    ctx.save();
+    ctx.translate(barrelPullback, 0);
+    ctx.rotate(spriteForwardFix);
+    ctx.globalCompositeOperation = "source-atop";
+    ctx.fillStyle = PICKUP_BARREL_TINT[weapon];
+    ctx.fillRect(-barrelDrawW / 2, -barrelDrawH, barrelDrawW, barrelDrawH);
+    ctx.restore();
+
+    // свечение на срезе — уголёк/изморозь на самом кончике, чтобы подобранное
+    // оружие читалось однозначно даже когда сам тинт на маленьком масштабе не заметен
     const glowPulse = 0.6 + 0.4 * Math.sin((t ?? 0) * 6);
     const glowColor = weapon === "ice" ? "191, 219, 254" : "251, 146, 60";
-    const glow = ctx.createRadialGradient(barrelPullback + glowLen - 4, 0, 0, barrelPullback + glowLen - 4, 0, 7);
+    const glow = ctx.createRadialGradient(barrelPullback + barrelLen - 4, 0, 0, barrelPullback + barrelLen - 4, 0, 7);
     glow.addColorStop(0, `rgba(${glowColor}, ${0.8 * glowPulse})`);
     glow.addColorStop(1, `rgba(${glowColor}, 0)`);
     ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.arc(barrelPullback + glowLen - 4, 0, 7, 0, Math.PI * 2);
+    ctx.arc(barrelPullback + barrelLen - 4, 0, 7, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();

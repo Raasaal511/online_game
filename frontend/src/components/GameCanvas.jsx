@@ -22,6 +22,7 @@ import {
   drawLaserShot3D,
   drawLaserStar3D,
   drawTeleportEffect3D,
+  drawArmorShieldEffect3D,
   drawPortal3D,
   drawWallBreakEffect3D,
   drawWallHitSpark3D,
@@ -99,6 +100,23 @@ function lerpAngle(a, b, t) {
   return a + diff * t;
 }
 
+// продвигает age у всех живых разовых эффектов (телепорт/лазер/взрыв/пробитие
+// стены и т.д.) и убирает истёкшие БЕЗ аллокации нового массива каждый кадр —
+// раньше 7 однотипных списков эффектов делали array.filter() 60 раз/сек
+// каждый (даже когда список пуст), что на 60fps даёт сотни лишних пустых
+// аллокаций в секунду и лишнюю нагрузку на GC; simple in-place compaction
+// той же идеи, что и в particles.js
+function advanceEffects(list, ageStep) {
+  let write = 0;
+  for (let read = 0; read < list.length; read++) {
+    const e = list[read];
+    e.age += ageStep(e);
+    if (e.age < 1) list[write++] = e;
+  }
+  list.length = write;
+  return list;
+}
+
 const EMPTY_STATE = { players: [], bullets: [], pickups: [] };
 
 export default function GameCanvas({
@@ -143,6 +161,7 @@ export default function GameCanvas({
   const lastMyHpRef = useRef(null); // отслеживаем свой HP между тиками — красная виньетка при уроне
   const hitFlashRef = useRef(0); // 0..1, затухающая яркость красной виньетки при получении урона
   const teleportEffectsRef = useRef([]); // {x, y, age} — вспышка появления после телепорта
+  const armorShieldEffectsRef = useRef([]); // {x, y, age} — объёмная сфера-щит при подборе брони
   const hadNukeRef = useRef(false); // была ли ядерка активна в прошлом кадре (для звука появления)
   // сервер шлёт state 30 раз/сек, а draw() вызывается на каждый requestAnimationFrame
   // (~60 раз/сек) — без этой защиты один и тот же тик (с одним и тем же
@@ -330,11 +349,18 @@ export default function GameCanvas({
           if (!seenPickupIds.has(id)) {
             playPickupSound();
             particles.spawnPickupBurst(pu.x, pu.y, pu.kind);
+            // броня получает отдельный объёмный эффект сферы-щита поверх
+            // обычных частиц — по просьбе пользователя частицы одни не
+            // читались как "щит", нужен явный раздувающийся купол
+            if (pu.kind === "armor") {
+              armorShieldEffectsRef.current.push({ x: pu.x, y: pu.y, age: 0 });
+            }
           }
         }
       }
       isFirstPickupSync.current = false;
       knownPickupIds.current = seenPickupIds;
+      advanceEffects(armorShieldEffectsRef.current, () => dt / 0.55);
 
       // новая бомба-предупреждение появилась на карте -> короткий "бип"
       const seenBombIds = new Set();
@@ -420,10 +446,7 @@ export default function GameCanvas({
           if (tp.player_id === playerId) playTeleportSound();
         }
       }
-      for (const eff of teleportEffectsRef.current) {
-        eff.age += dt / 0.35;
-      }
-      teleportEffectsRef.current = teleportEffectsRef.current.filter((e) => e.age < 1);
+      advanceEffects(teleportEffectsRef.current, () => dt / 0.35);
 
       // новая пара порталов появилась/исчезла на карте -> звук (не привязан
       // к конкретному игроку, слышен всем — это событие карты, не способность)
@@ -432,10 +455,7 @@ export default function GameCanvas({
           if (ev.type === "spawn") playPortalSpawnSound();
         }
       }
-      for (const shot of laserShotsRef.current) {
-        shot.age += dt / LASER_SHOT_LIFETIME;
-      }
-      laserShotsRef.current = laserShotsRef.current.filter((s) => s.age < 1);
+      advanceEffects(laserShotsRef.current, () => dt / LASER_SHOT_LIFETIME);
 
       // серверные события взрыва (ракета/бомба) -> визуальная ударная волна
       // + звук; отслеживаем по количеству, т.к. explosions приходят как
@@ -450,11 +470,7 @@ export default function GameCanvas({
           shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, isNuke ? 26 : 12);
         }
       }
-      for (const explosion of explosionsRef.current) {
-        const lifetime = explosion.kind === "nuke" ? NUKE_EXPLOSION_LIFETIME : EXPLOSION_LIFETIME;
-        explosion.age += dt / lifetime;
-      }
-      explosionsRef.current = explosionsRef.current.filter((e) => e.age < 1);
+      advanceEffects(explosionsRef.current, (e) => dt / (e.kind === "nuke" ? NUKE_EXPLOSION_LIFETIME : EXPLOSION_LIFETIME));
 
       // стена сломана оружием игрока -> обвал обломков + звук + тряска
       if (isNewTick) {
@@ -465,10 +481,7 @@ export default function GameCanvas({
           shakeRef.current.magnitude = Math.max(shakeRef.current.magnitude, 6);
         }
       }
-      for (const effect of wallBreaksRef.current) {
-        effect.age += dt / WALL_BREAK_LIFETIME;
-      }
-      wallBreaksRef.current = wallBreaksRef.current.filter((e) => e.age < 1);
+      advanceEffects(wallBreaksRef.current, () => dt / WALL_BREAK_LIFETIME);
 
       // попадание в стену без разрушения -> короткая искра + глухой удар
       if (isNewTick) {
@@ -477,10 +490,7 @@ export default function GameCanvas({
           playWallHitSound();
         }
       }
-      for (const hit of wallHitsRef.current) {
-        hit.age += dt / WALL_HIT_LIFETIME;
-      }
-      wallHitsRef.current = wallHitsRef.current.filter((e) => e.age < 1);
+      advanceEffects(wallHitsRef.current, () => dt / WALL_HIT_LIFETIME);
 
       // сквозная пуля снайпера пробила цель -> лёгкая искра в точке контакта,
       // САМА пуля НЕ гаснет (в отличие от wall_hits это не связано со стеной) —
@@ -490,10 +500,7 @@ export default function GameCanvas({
           pierceHitsRef.current.push({ x: hit.x, y: hit.y, age: 0 });
         }
       }
-      for (const hit of pierceHitsRef.current) {
-        hit.age += dt / PIERCE_HIT_LIFETIME;
-      }
-      pierceHitsRef.current = pierceHitsRef.current.filter((e) => e.age < 1);
+      advanceEffects(pierceHitsRef.current, () => dt / PIERCE_HIT_LIFETIME);
 
       particles.update(dt);
 
@@ -809,10 +816,24 @@ export default function GameCanvas({
             drawMuzzleFlash3D(ctx, flashX, flashY, obj.data.turret_angle, kickback);
           }
           if (obj.data.laser_charging) {
-            drawLaserCharge3D(ctx, obj.data.x, obj.data.y, obj.data.laser_charging.angle, obj.data.laser_charging.progress);
+            drawLaserCharge3D(
+              ctx,
+              obj.data.x,
+              obj.data.y,
+              obj.data.laser_charging.angle,
+              obj.data.laser_charging.progress,
+              obj.data.laser_charging.range
+            );
           }
           if (obj.data.laser_star_active && obj.data.laser_star_angles?.length) {
-            drawLaserStar3D(ctx, obj.data.x, obj.data.y, obj.data.laser_star_angles, timestamp / 1000);
+            drawLaserStar3D(
+              ctx,
+              obj.data.x,
+              obj.data.y,
+              obj.data.laser_star_angles,
+              obj.data.laser_star_lengths || [],
+              timestamp / 1000
+            );
           }
         } else if (obj.type === "bullet") {
           drawBullet3D(ctx, obj.data, timestamp / 1000);
@@ -836,6 +857,11 @@ export default function GameCanvas({
       // вспышки телепорта
       for (const eff of teleportEffectsRef.current) {
         drawTeleportEffect3D(ctx, eff, eff.age);
+      }
+
+      // сферы-щиты при подборе брони
+      for (const eff of armorShieldEffectsRef.current) {
+        drawArmorShieldEffect3D(ctx, eff, eff.age);
       }
 
       // эффекты попаданий/разрушения стен

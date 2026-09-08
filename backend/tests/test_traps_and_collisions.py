@@ -1,3 +1,4 @@
+import math
 import time
 
 import pytest
@@ -96,9 +97,13 @@ async def test_pit_zone_kills_player_after_fall_time(room):
     from app.game.entities import PIT_FALL_TIME
     from app.game.map import SUPER_PICKUP_POINT
 
-    # угол ядра крепости заведомо внутри одной из PIT_ZONES (не на мосту)
-    cx, cy = SUPER_PICKUP_POINT
-    p = Player.new("Faller", cx - 150, cy - 150)
+    # точка гарантированно внутри одной из PIT_ZONES (не на мосту) — взята из
+    # центра самой зоны, а не смещением от SUPER_PICKUP_POINT "на глаз", чтобы
+    # тест не ломался при пересчёте геометрии ямы под форму крепостной стены
+    from app.game.map import PIT_ZONES
+
+    zx, zy, zw, zh = PIT_ZONES[0]
+    p = Player.new("Faller", zx + zw / 2, zy + zh / 2)
     room.players[p.id] = p
 
     t0 = time.monotonic()
@@ -113,10 +118,11 @@ async def test_pit_zone_kills_player_after_fall_time(room):
 
 
 def test_pit_zone_spares_player_who_leaves_in_time(room):
-    from app.game.map import SUPER_PICKUP_POINT
+    from app.game.map import PIT_ZONES, SUPER_PICKUP_POINT
 
     cx, cy = SUPER_PICKUP_POINT
-    p = Player.new("Runner", cx - 150, cy - 150)
+    zx, zy, zw, zh = PIT_ZONES[0]
+    p = Player.new("Runner", zx + zw / 2, zy + zh / 2)
     room.players[p.id] = p
 
     room._process_pits(time.monotonic())
@@ -130,21 +136,50 @@ def test_pit_zone_spares_player_who_leaves_in_time(room):
 
 
 def test_laser_star_ticks_damage_on_nearby_target(room):
+    # laser_star_angles больше не статичен — _process_laser_star пересчитывает
+    # его каждый тик из started_at/base_angle (вращение на 360° за LASER_STAR_DURATION),
+    # поэтому started_at=now (прогресс вращения = 0) даёт ровно исходные углы,
+    # а не полагается на побочный эффект нулевых полей по умолчанию
     p1 = Player.new("P1", 400, 400)
-    p2 = Player.new("P2", 450, 400)  # прямо по одному из 8 фиксированных лучей (угол 0)
+    p2 = Player.new("P2", 450, 400)  # прямо по одному из 8 лучей в момент подбора (угол 0)
     room.players[p1.id] = p1
     room.players[p2.id] = p2
 
     now = time.monotonic()
     p1.turret_angle = 0.0
     p1.laser_star_until = now + 5.0
-    from app.game.entities import LASER_STAR_BEAM_COUNT
-    import math
-
-    p1.laser_star_angles = [i * (2 * math.pi / LASER_STAR_BEAM_COUNT) for i in range(LASER_STAR_BEAM_COUNT)]
+    p1.laser_star_started_at = now
+    p1.laser_star_base_angle = 0.0
     p1.laser_star_last_tick_at = -999.0
 
     hp_before = p2.hp
     room._process_laser_star(time.monotonic())
 
-    assert p2.hp < hp_before, "target on one of the 8 fixed beams should take tick damage"
+    assert p2.hp < hp_before, "target on one of the 8 beams should take tick damage"
+
+
+def test_laser_star_rotates_and_expires_after_one_revolution(room):
+    from app.game.entities import LASER_STAR_DURATION
+
+    p1 = Player.new("P1", 400, 400)
+    room.players[p1.id] = p1
+
+    now = time.monotonic()
+    p1.turret_angle = 0.0
+    p1.laser_star_until = now + LASER_STAR_DURATION
+    p1.laser_star_started_at = now
+    p1.laser_star_base_angle = 0.0
+    p1.laser_star_last_tick_at = -999.0
+
+    room._process_laser_star(now)
+    start_angle = p1.laser_star_angles[0]
+
+    # на полпути должно повернуться примерно на половину оборота (~pi)
+    room._process_laser_star(now + LASER_STAR_DURATION / 2)
+    mid_angle = p1.laser_star_angles[0]
+    diff = abs(((mid_angle - start_angle) + math.pi) % (2 * math.pi) - math.pi)
+    assert diff == pytest.approx(math.pi, abs=0.05)
+
+    # после LASER_STAR_DURATION бафф должен закончиться
+    room._process_laser_star(now + LASER_STAR_DURATION + 0.1)
+    assert now + LASER_STAR_DURATION + 0.1 >= p1.laser_star_until

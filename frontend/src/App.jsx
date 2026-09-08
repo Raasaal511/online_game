@@ -313,7 +313,7 @@ export default function App() {
                 {banners.map((b) => (
                   <div
                     key={b.id}
-                    className="anim-banner-pop"
+                    className="anim-pop"
                     style={{ ...overlayStyles.banner, ...overlayStyles[`banner_${b.kind}`] }}
                   >
                     {b.text}
@@ -324,7 +324,7 @@ export default function App() {
 
             {deathInfo && (
               <div style={overlayStyles.backdrop}>
-                <div className="anim-banner-pop" style={overlayStyles.box}>
+                <div className="anim-pop" style={overlayStyles.box}>
                   <div style={styles.badge}>
                     <IconBurst /> ТАНК УНИЧТОЖЕН
                   </div>
