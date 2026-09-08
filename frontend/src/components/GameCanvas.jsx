@@ -233,7 +233,12 @@ export default function GameCanvas({
           prev.angle = lerpAngle(prev.angle, p.turret_angle, t);
         }
       }
-      for (const id of Array.from(smooth.keys())) {
+      // Array.from(map.keys()) убран — каждый цикл ниже удаляет только ТЕКУЩИЙ
+      // ключ своей же итерации (delete/set текущего id), а Map-итератор по
+      // спецификации безопасен именно к этому случаю (не безопасен только к
+      // ДОБАВЛЕНИЮ новых ключей во время итерации, чего здесь не происходит) —
+      // копия массива на каждый кадр была лишней аллокацией без необходимости.
+      for (const id of smooth.keys()) {
         if (!seenIds.has(id)) smooth.delete(id);
       }
       // те же id, что и smooth — очищаем и остальные per-player Map'ы от
@@ -242,10 +247,10 @@ export default function GameCanvas({
       // раундов) эти Map росли неограниченно, что медленно, но неуклонно
       // замедляло .get()/.set() в горячем цикле рендера — источник
       // накапливающихся микро-лагов при долгой сессии.
-      for (const id of Array.from(motionSmoothRef.current.keys())) {
+      for (const id of motionSmoothRef.current.keys()) {
         if (!seenIds.has(id)) motionSmoothRef.current.delete(id);
       }
-      for (const id of Array.from(knownAliveState.current.keys())) {
+      for (const id of knownAliveState.current.keys()) {
         if (!seenIds.has(id)) knownAliveState.current.delete(id);
       }
 
@@ -284,7 +289,7 @@ export default function GameCanvas({
         }
         lastBulletPos.current.set(b.id, { x: b.x, y: b.y });
       }
-      for (const [id, pos] of Array.from(lastBulletPos.current.entries())) {
+      for (const [id, pos] of lastBulletPos.current) {
         if (!seenBulletIds.has(id)) {
           particles.spawnHitSpark(pos.x, pos.y);
           playHitSound();
@@ -294,7 +299,7 @@ export default function GameCanvas({
       }
 
       // затухание отдачи ствола каждого танка
-      for (const [pid, k] of Array.from(kickbackRef.current.entries())) {
+      for (const [pid, k] of kickbackRef.current) {
         const next = Math.max(0, k - dt * 6);
         if (next <= 0.001) kickbackRef.current.delete(pid);
         else kickbackRef.current.set(pid, next);

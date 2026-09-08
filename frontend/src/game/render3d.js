@@ -457,6 +457,21 @@ function getWallTopPattern(ctx) {
   return _wallTopPattern;
 }
 
+// градиент верхней грани бордюрных (не destructible) стен — зависит только
+// от height и topLight (оба статичны для данной стены), см. drawWallTopFace
+const _wallTopGradientCache = new Map(); // key: `${height},${topLight}` -> CanvasGradient
+
+function getWallTopGradient(ctx, height, topLight) {
+  const key = `${height},${topLight}`;
+  let grad = _wallTopGradientCache.get(key);
+  if (grad) return grad;
+  grad = ctx.createLinearGradient(0, 0, 0, height);
+  grad.addColorStop(0, shadeColor("#4a4d42", 0.2 + topLight * 0.25));
+  grad.addColorStop(1, shadeColor("#4a4d42", topLight * 0.2));
+  _wallTopGradientCache.set(key, grad);
+  return grad;
+}
+
 // верхняя (обращённая к камере "сверху") грань стены — единственная часть
 // drawWall3D, которая раньше была плоской заливкой-градиентом; боковые грани
 // и отбрасываемая тень вокруг неё не трогались, они и так давали объём
@@ -490,11 +505,22 @@ function drawWallTopFace(ctx, wall, x, topY, width, height, topLight) {
     // что и у пола/пуль в этой кодовой базе)
   }
 
-  const topGrad = ctx.createLinearGradient(x, topY, x, topY + height);
-  topGrad.addColorStop(0, shadeColor("#4a4d42", 0.2 + topLight * 0.25));
-  topGrad.addColorStop(1, shadeColor("#4a4d42", topLight * 0.2));
+  // topLight — статическая константа освещения грани (faceLighting(0,-1) у
+  // вызывающего кода, не анимируется), height — геометрия стены, тоже не
+  // меняется в рантайме. Раньше градиент пересоздавался для каждой
+  // бордюрной (не destructible) стены каждый кадр — та же ситуация, что уже
+  // решена для _pitGradientCache/getWallTopPattern, просто этот конкретный
+  // случай был пропущен. createLinearGradient(x, topY, ...) использует
+  // координаты ТЕКУЩЕГО transform-пространства, но сами стопы зависят
+  // только от относительного смещения (0..height), не от абсолютной
+  // позиции — поэтому можно закэшировать один градиент "от 0 до height" и
+  // рисовать его через translate вместо пересоздания под каждую стену.
+  const topGrad = getWallTopGradient(ctx, height, topLight);
+  ctx.save();
+  ctx.translate(x, topY);
   ctx.fillStyle = topGrad;
-  ctx.fillRect(x, topY, width, height);
+  ctx.fillRect(0, 0, width, height);
+  ctx.restore();
   ctx.strokeStyle = "rgba(203, 213, 225, 0.18)";
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, topY + 0.5, width - 1, height - 1);
@@ -1111,20 +1137,20 @@ export function drawBullet3D(ctx, bullet, t = 0) {
     ctx.stroke();
 
     // 2-3 отдельных клуба огня по бокам хвоста — ломает идеально прямую
-    // линию выхлопа, читается как живое пламя, а не статичный градиент
+    // линию выхлопа, читается как живое пламя, а не статичный градиент.
+    // Раньше — 3x ctx.createRadialGradient() на КАЖДУЮ ракету КАЖДЫЙ кадр
+    // (плюс 2 линейных градиента дыма/пламени выше = 5 градиентов/ракету/
+    // кадр); при нескольких ракетах на экране это заметная нагрузка на GC.
+    // Сами клубы — просто радиальное пятно "ярко в центре, прозрачно к
+    // краю", тот же паттерн, что уже закэширован в _glowSpriteCache для
+    // свечения пуль — переиспользуем его вместо пересоздания градиента.
     for (let i = 0; i < 3; i++) {
       const along = 0.3 + i * 0.28;
       const wobble = Math.sin(t * 24 + i * 2.4 + bullet.x * 0.05) * r * 0.35;
       const px = bullet.x + backX * exhaustLen * along - backY * wobble;
       const py2 = bullet.y + backY * exhaustLen * along + backX * wobble;
       const puffR = r * (0.55 - i * 0.12) * flicker;
-      const puffGrad = ctx.createRadialGradient(px, py2, 0, px, py2, puffR);
-      puffGrad.addColorStop(0, `rgba(253, 186, 116, ${0.7 * flicker})`);
-      puffGrad.addColorStop(1, "rgba(234, 88, 12, 0)");
-      ctx.fillStyle = puffGrad;
-      ctx.beginPath();
-      ctx.arc(px, py2, puffR, 0, Math.PI * 2);
-      ctx.fill();
+      drawGlowSprite(ctx, "253, 186, 116", px, py2, puffR, 0.7 * flicker);
     }
   }
 
@@ -2481,32 +2507,36 @@ export function drawTank3D(
   const nameLabel = isMiniboss ? `☠ ${player.nickname}` : player.nickname;
   const nameY = topY - half - 14;
 
+  // shadowBlur — дорогой программный блюр, раньше висел на КАЖДОМ живом
+  // игроке КАЖДЫЙ кадр (2 вызова: подпись уровня + ник) — с 8-10 игроками
+  // на экране это 16-20 blur-проходов/кадр только на текст. Заменено на
+  // дешёвую "поддельную тень": тот же текст, залитый тёмным, рисуется один
+  // раз со смещением в 1px под основным — обычная заливка без блюра,
+  // читаемость на любом фоне та же, стоимость на порядок ниже.
   if (!hideLabels && !isMiniboss && level > 1) {
-    ctx.fillStyle = "#fde047";
     ctx.font = "bold 10px sans-serif";
     ctx.textAlign = "center";
-    ctx.shadowColor = "rgba(0,0,0,0.8)";
-    ctx.shadowBlur = 3;
+    ctx.fillStyle = "rgba(0,0,0,0.8)";
+    ctx.fillText(`★ Уровень ${level}`, x + 1, nameY - 12 + 1);
+    ctx.fillStyle = "#fde047";
     ctx.fillText(`★ Уровень ${level}`, x, nameY - 12);
   }
 
   if (!hideLabels) {
-    ctx.fillStyle = isMiniboss ? "#fecaca" : "white";
     ctx.font = isMiniboss ? "bold 13px sans-serif" : "11px sans-serif";
     ctx.textAlign = "center";
-    ctx.shadowColor = "rgba(0,0,0,0.8)";
-    ctx.shadowBlur = 3;
+    ctx.fillStyle = "rgba(0,0,0,0.8)";
+    ctx.fillText(nameLabel, x + 1, nameY + 1);
+    ctx.fillStyle = isMiniboss ? "#fecaca" : "white";
     ctx.fillText(nameLabel, x, nameY);
 
     const barWidth = isMiniboss ? tankSize * 1.6 : tankSize;
     const barHeight = isMiniboss ? 7 : 5;
     const hpRatio = Math.max(0, hp / maxHp);
-    ctx.shadowBlur = 0;
     ctx.fillStyle = "#334155";
     ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth, barHeight);
     ctx.fillStyle = isMiniboss ? "#dc2626" : hpRatio > 0.3 ? "#22c55e" : "#ef4444";
     ctx.fillRect(x - barWidth / 2, topY - half - 10, barWidth * hpRatio, barHeight);
-    ctx.shadowColor = "transparent";
 
     // прогресс-бары готовности (ульта / патроны gunner) — прямо у танка,
     // видно не отвлекаясь на HUD в углу экрана. Только для своего танка:

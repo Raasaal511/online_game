@@ -369,13 +369,20 @@ class GameRoom(WeaponMixin, MinibossMixin, NukeMixin, PortalMixin):
 
     def _check_bullet_collisions(self) -> None:
         dead_bullets = []
+        # снимок списка игроков — СНАРУЖИ цикла по пулям: _apply_damage ниже
+        # может убить игрока и через _maybe_spawn_miniboss добавить нового
+        # NPC в self.players, мутируя словарь прямо во время итерации по
+        # нему (RuntimeError), поэтому снимок нужен. Раньше пересоздавался
+        # заново на КАЖДУЮ пулю (list(...) внутри внешнего цикла) — при 20-30
+        # пулях на экране это 20-30 копий списка игроков за тик без всякой
+        # необходимости: свежий минибосс, заспавненный ударом одной пули,
+        # станет доступен для коллизий следующим тиком (через ~33мс) вместо
+        # того же тика — разница не играет роли в реальном бою.
+        players_snapshot = list(self.players.values())
         for bullet in self.bullets.values():
             if bullet.kind == "flamethrower":
                 continue
-            # снимок списка игроков: _apply_damage ниже может убить игрока и
-            # через _maybe_spawn_miniboss добавить нового NPC в self.players,
-            # мутируя словарь прямо во время итерации по нему (RuntimeError)
-            for player in list(self.players.values()):
+            for player in players_snapshot:
                 if not player.alive or player.id == bullet.owner_id:
                     continue
                 if bullet.pierce and player.id in bullet.hit_ids:
