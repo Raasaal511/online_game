@@ -49,7 +49,12 @@ async def test_miniboss_spawns_on_player_death_and_excluded_from_room_limit(room
     assert len(bosses) == 1
     boss = bosses[0]
     assert boss.hp > TANK_MAX_HP, "miniboss should have much more HP than a normal tank"
-    assert boss.x == victim.x and boss.y == victim.y
+    # босс спавнится в фиксированной безопасной точке карты (MINIBOSS_SPAWN_POINT),
+    # а не в месте смерти игрока — иначе он мог появиться вплотную к стене и
+    # застрять (у него нет pathfinding'а, см. _drive_miniboss_ai)
+    from app.game.map import MINIBOSS_SPAWN_POINT
+
+    assert (boss.x, boss.y) == MINIBOSS_SPAWN_POINT
 
     # мини-боссы не считаются в лимите комнаты
     assert not room.is_full()

@@ -42,6 +42,11 @@ MINIBOSS_SIZE = 96  # втрое крупнее обычного танка (32)
 MINIBOSS_WAYPOINT_RADIUS = 40.0  # считается "дошёл", если ближе этого расстояния
 MINIBOSS_ATTACKS = ("salvo", "artillery", "laser", "shotgun")
 
+# анти-залипание (см. _drive_miniboss_ai) — как часто сверяем пройденное
+# боссом расстояние и порог, ниже которого считаем его застрявшим
+MINIBOSS_STUCK_CHECK_INTERVAL = 1.5
+MINIBOSS_STUCK_DISTANCE = 20.0
+
 
 def spawn_miniboss(x: float, y: float, owner_nickname: str) -> Player:
     # мини-босс — обычный Player (переиспользует всю физику/коллизии/урон),
@@ -90,6 +95,18 @@ class MinibossMixin:
             if boss.is_miniboss and boss.alive:
                 self._drive_miniboss_ai(boss, now)
 
+    def _reroll_miniboss_waypoint(self, boss: Player, now: float) -> None:
+        from app.game.map import FIELD_WIDTH, FIELD_HEIGHT
+
+        margin = 120.0
+        boss.ai_waypoint_x = random.uniform(margin, FIELD_WIDTH - margin)
+        boss.ai_waypoint_y = random.uniform(margin, FIELD_HEIGHT - margin)
+        # прогресс-таймер тоже сбрасываем — иначе следующая проверка застревания
+        # сравнит позицию с точкой ДО перевыбора цели и может ложно сработать
+        # повторно на том же тике блуждания
+        boss.ai_progress_x, boss.ai_progress_y = boss.x, boss.y
+        boss.ai_progress_checked_at = now
+
     def _drive_miniboss_ai(self, boss: Player, now: float) -> None:
         from app.game.map import FIELD_WIDTH, FIELD_HEIGHT
 
@@ -100,12 +117,32 @@ class MinibossMixin:
         dwy = boss.ai_waypoint_y - boss.y
         wdist = math.hypot(dwx, dwy)
         if wdist < MINIBOSS_WAYPOINT_RADIUS:
-            margin = 120.0
-            boss.ai_waypoint_x = random.uniform(margin, FIELD_WIDTH - margin)
-            boss.ai_waypoint_y = random.uniform(margin, FIELD_HEIGHT - margin)
+            self._reroll_miniboss_waypoint(boss, now)
             dwx = boss.ai_waypoint_x - boss.x
             dwy = boss.ai_waypoint_y - boss.y
             wdist = math.hypot(dwx, dwy) or 1.0
+
+        # анти-залипание: босс идёт к waypoint по прямой, без обхода
+        # препятствий (нет pathfinding'а) — если между ним и waypoint
+        # оказалась стена, коллизия в _move_players гасит его скорость
+        # каждый тик, а перевыбор waypoint выше срабатывает только когда
+        # босс УЖЕ дошёл (wdist < RADIUS), то есть никогда. Раньше это
+        # приводило к тому, что застрявший босс стоял намертво до конца
+        # игры. Здесь раз в MINIBOSS_STUCK_CHECK_INTERVAL сек сверяем, на
+        # сколько он реально сдвинулся с прошлой проверки — если меньше
+        # MINIBOSS_STUCK_DISTANCE (меньше, чем можно проехать даже почти
+        # стоя на месте), считаем его застрявшим и принудительно даём новую
+        # случайную цель, а не ждём, пока он "дойдёт" до недостижимой.
+        if now - boss.ai_progress_checked_at >= MINIBOSS_STUCK_CHECK_INTERVAL:
+            moved = math.hypot(boss.x - boss.ai_progress_x, boss.y - boss.ai_progress_y)
+            if boss.ai_progress_checked_at > 0 and moved < MINIBOSS_STUCK_DISTANCE:
+                self._reroll_miniboss_waypoint(boss, now)
+                dwx = boss.ai_waypoint_x - boss.x
+                dwy = boss.ai_waypoint_y - boss.y
+                wdist = math.hypot(dwx, dwy) or 1.0
+            boss.ai_progress_x, boss.ai_progress_y = boss.x, boss.y
+            boss.ai_progress_checked_at = now
+
         boss.dir_x, boss.dir_y = dwx / wdist, dwy / wdist
 
         # лазер уже заряжается с прошлого тика — обрабатываем его созревание
@@ -248,6 +285,7 @@ class MinibossMixin:
 
     def _maybe_spawn_miniboss(self, x: float, y: float, owner_nickname: str) -> None:
         from app.game.entities import MINIBOSS_SPAWN_CHANCE
+        from app.game.map import MINIBOSS_SPAWN_POINT
 
         # не больше одного мини-босса на карте одновременно — раньше при частых
         # смертях в активной игре они накапливались (2-3 сразу), что превращало
@@ -256,6 +294,13 @@ class MinibossMixin:
             return
         if random.random() >= MINIBOSS_SPAWN_CHANCE:
             return
-        boss = spawn_miniboss(x, y, owner_nickname)
+        # раньше спавнился в точке смерти игрока (x, y от вызывающего кода) —
+        # это могло оказаться вплотную к стене, и босс без pathfinding'а
+        # намертво застревал первым же шагом (см. MINIBOSS_SPAWN_POINT).
+        # Параметры x, y оставлены сигнатуре не используемыми для спавна —
+        # их продолжает нести _miniboss_spawns (клиентское событие анимации
+        # появления), которое по-прежнему логично привязать к месту гибели.
+        sx, sy = MINIBOSS_SPAWN_POINT
+        boss = spawn_miniboss(sx, sy, owner_nickname)
         self.players[boss.id] = boss
-        self._miniboss_spawns.append({"x": x, "y": y, "owner": owner_nickname})
+        self._miniboss_spawns.append({"x": sx, "y": sy, "owner": owner_nickname})

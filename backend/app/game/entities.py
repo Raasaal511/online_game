@@ -253,6 +253,9 @@ class Player:
     miniboss_owner_nickname: str = ""  # чей это был мини-босс (для сообщения на клиенте)
     ai_waypoint_x: float = 0.0  # текущая случайная точка блуждания (мини-босс)
     ai_waypoint_y: float = 0.0
+    ai_progress_x: float = 0.0  # позиция босса на момент последней проверки прогресса к waypoint
+    ai_progress_y: float = 0.0
+    ai_progress_checked_at: float = -999.0  # когда в последний раз проверяли, что босс не застрял
     ai_last_salvo_at: float = -999.0
     chat_last_at: float = -999.0
     laser_charging_until: float = 0.0  # мини-босс: телеграф лазера (виден до выстрела)

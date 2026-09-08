@@ -2295,29 +2295,25 @@ export function drawTank3D(
     // мягкого дышащего контура-свечения по силуэту корпуса, читается как
     // энергощит поверх брони, не спорит с текстурой спрайта под ним
     const armorPulse = 0.6 + 0.4 * Math.sin((t ?? 0) * 5);
+    const glowR = tankSize * (0.78 + armorPulse * 0.08);
     ctx.save();
-    ctx.shadowColor = "rgba(56, 189, 248, 0.7)";
-    ctx.shadowBlur = 7 + armorPulse * 5;
-    ctx.strokeStyle = `rgba(125, 211, 252, ${0.5 + armorPulse * 0.3})`;
-    ctx.lineWidth = 2;
-    drawRoundedRect(ctx, -half - 2, topY - half - 2, tankSize + 4, tankSize + 4, tankSize * 0.18);
-    ctx.stroke();
+    const glow = ctx.createRadialGradient(0, topY, tankSize * 0.3, 0, topY, glowR);
+    glow.addColorStop(0, `rgba(125, 211, 252, ${0.4 + armorPulse * 0.2})`);
+    glow.addColorStop(0.7, `rgba(56, 189, 248, ${0.18 + armorPulse * 0.1})`);
+    glow.addColorStop(1, "rgba(56, 189, 248, 0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(0, topY, glowR, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
-  if (hasSuper) {
-    // hasSuper теперь исключительно награда за мини-босса (см. apply_miniboss_kill_reward) —
-    // сохранён яркий пульсирующий контур как явный сигнал редкого мощного баффа,
-    // отличимый от обычной брони по цвету/интенсивности
-    const superPulse = 0.6 + 0.4 * Math.sin((t ?? 0) * 8);
-    ctx.save();
-    ctx.shadowColor = "rgba(250, 204, 21, 0.8)";
-    ctx.shadowBlur = 8 + superPulse * 6;
-    ctx.strokeStyle = `rgba(253, 224, 71, ${0.7 + superPulse * 0.3})`;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(-half - 2, topY - half - 2, tankSize + 4, tankSize + 4);
-    ctx.restore();
-  }
+  // hasSuper — раньше здесь рисовался ВТОРОЙ прямоугольный strokeRect-контур
+  // вокруг корпуса поверх уже существующего ambient-свечения выше (см.
+  // "тонкое золотое ambient-свечение" при topY) — на реальном спрайте
+  // жёсткая рамка с острыми углами читалась как кустарная декаль поверх
+  // готовой текстуры. Убрана целиком: ambient-глоу выше уже полностью
+  // покрывает сигнал баффа мягким радиальным сиянием, без единой прямой линии.
 
   if (hasSpeedBoost) {
     // короткие "моторные" штрихи по бокам корпуса вдоль оси движения
