@@ -26,6 +26,17 @@ var upgrader = websocket.Upgrader{
 const (
 	pongWait   = 60 * time.Second
 	pingPeriod = 30 * time.Second
+	// writeWait — максимум, сколько WriteMessage/WriteControl может блокировать
+	// вызывающую горутину. Без явного дедлайна gorilla/websocket ждёт запись
+	// НЕОГРАНИЧЕННО долго, если у одной из сторон подвисла отправка (медленный
+	// клиент, TCP-буфер полон) — а поскольку writeMu общий между pipe() и
+	// pingLoop() на одно и то же соединение, зависшая запись держит мьютекс и
+	// блокирует ВСЕ последующие тики к этому клиенту, пока запись не пройдёт
+	// или само соединение не порвётся по read-таймауту. Это точное совпадение
+	// с наблюдаемым паттерном "обычно ~34мс между тиками, изредка скачок до
+	// сотен мс" — сейчас без верхней границы такой скачок мог длиться сколько
+	// угодно.
+	writeWait = 5 * time.Second
 )
 
 // BackendWSURL — адрес внутреннего WS-эндпоинта Python (backend),
@@ -44,13 +55,14 @@ type wsConn struct {
 func (c *wsConn) writeMessage(msgType int, data []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 	return c.Conn.WriteMessage(msgType, data)
 }
 
 func (c *wsConn) writePing() error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return c.Conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+	return c.Conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait))
 }
 
 // GameHandler принимает клиента на /ws/game, поднимает parallel-соединение

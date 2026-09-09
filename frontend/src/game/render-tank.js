@@ -714,6 +714,35 @@ export function drawTank3D(
   const barrelDrawW = barrelDims.w * barrelScale;
   const barrelDrawH = barrelDims.h * barrelScale;
 
+  // мантлет — расширяющееся основание ствола там, где он входит в башню.
+  // Без него узкий ствол-спрайт стартовал прямо от центра, а широкий обод
+  // октагона башни (turretR, гораздо шире полуширины ствола) перекрывал его
+  // первый сегмент своим прямым краем — читалось как уступ/надрез, будто
+  // ствол торчит ИЗ-ПОД башни, а не гладко выходит из её центра. Конус того
+  // же цвета/освещения, что и сам ствол, сглаживает переход визуально.
+  ctx.save();
+  ctx.translate(barrelPullback, 0);
+  const mantletLen = turretR * 0.9;
+  const mantletNear = barrelDrawW * 0.5;
+  ctx.fillStyle = shadeSkinColor(spriteColorName, -0.1);
+  ctx.beginPath();
+  ctx.moveTo(0, -turretR * 0.42);
+  ctx.lineTo(mantletLen, -mantletNear);
+  ctx.lineTo(mantletLen, mantletNear);
+  ctx.lineTo(0, turretR * 0.42);
+  ctx.closePath();
+  ctx.fill();
+  // тот же диагональный блик сверху-слева, что и у самого ствола (drawBarrelVolume)
+  ctx.fillStyle = "rgba(255,255,255,0.2)";
+  ctx.beginPath();
+  ctx.moveTo(0, -turretR * 0.42);
+  ctx.lineTo(mantletLen, -mantletNear);
+  ctx.lineTo(mantletLen, -mantletNear * 0.3);
+  ctx.lineTo(0, -turretR * 0.15);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
   if (isMiniboss) {
     // мини-босс отличим не только размером/цветом: спаренные стволы (он
     // реально бьёт несколькими типами атак) — два экземпляра одного спрайта

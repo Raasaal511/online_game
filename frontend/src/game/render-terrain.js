@@ -402,12 +402,46 @@ export function drawWall3D(ctx, wall) {
   // точно к контуру стены, а другой вытянут в сторону от света.
   const shadowDx = SHADOW_DIR.x * depth * 1.4;
   const shadowDy = SHADOW_DIR.y * depth * 1.4 * TILT;
-  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  // градиент вдоль направления тени вместо сплошной заливки — тёмный у
+  // основания стены (где тень физически контактирует с объектом), плавно
+  // затухающий к прозрачности на дальнем краю. Раньше единый плоский тон
+  // читался как жёсткий чёрный треугольник, а не мягкая падающая тень.
+  const shadowGrad = ctx.createLinearGradient(
+    x + width / 2,
+    y + height,
+    x + width / 2 + shadowDx,
+    y + height + shadowDy
+  );
+  shadowGrad.addColorStop(0, "rgba(0,0,0,0.42)");
+  shadowGrad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = shadowGrad;
   ctx.beginPath();
   ctx.moveTo(x, y + height);
   ctx.lineTo(x + width, y + height);
   ctx.lineTo(x + width + shadowDx, y + height + shadowDy);
   ctx.lineTo(x + shadowDx, y + height + shadowDy);
+  ctx.closePath();
+  ctx.fill();
+
+  // тень с боку — свет направлен по диагонали (сверху-слева), значит тень
+  // физически выходит не только из нижнего ребра, но и из правого (восточного),
+  // симметрично первому полигону: без неё объект отбрасывал тень только
+  // "вниз", а не в реальном направлении диагонального света, и угол стены
+  // выглядел как будто тень обрывается на полпути
+  const sideShadowGrad = ctx.createLinearGradient(
+    x + width,
+    y + height / 2,
+    x + width + shadowDx,
+    y + height / 2 + shadowDy
+  );
+  sideShadowGrad.addColorStop(0, "rgba(0,0,0,0.42)");
+  sideShadowGrad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = sideShadowGrad;
+  ctx.beginPath();
+  ctx.moveTo(x + width, y);
+  ctx.lineTo(x + width, y + height);
+  ctx.lineTo(x + width + shadowDx, y + height + shadowDy);
+  ctx.lineTo(x + width + shadowDx, y + shadowDy);
   ctx.closePath();
   ctx.fill();
 
