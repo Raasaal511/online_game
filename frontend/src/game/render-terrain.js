@@ -319,15 +319,17 @@ function drawWallTopFace(ctx, wall, x, topY, width, height, topLight) {
   if (wall.destructible) {
     const pattern = getWallTopPattern(ctx);
     if (pattern) {
-      // ctx.translate двигает и систему координат заливки паттерном (фазу
-      // тайла), не только геометрию fillRect — поэтому просто переносим
-      // начало координат в угол стены перед заливкой, без ручной DOMMatrix
-      // возни с самим CanvasPattern
-      ctx.save();
-      ctx.translate(x, topY);
+      // ВАЖНО: заливаем паттерном в МИРОВЫХ координатах (fillRect(x, topY, ...)
+      // без ctx.translate) — раньше translate(x, topY) перед заливкой сдвигал
+      // фазу тайла в СИСТЕМУ КООРДИНАТ КАЖДОЙ КОНКРЕТНОЙ СТЕНЫ (ноль паттерна
+      // всегда в её углу x=0,y=0), а не в единую систему координат карты. Две
+      // соседние стены (разные Wall-объекты, но физически стоящие впритык)
+      // получали каждая свою фазу тайла независимо друг от друга — на стыке
+      // текстура "прыгала", читалось как явный шов/разрез. Без translate
+      // фаза паттерна одна на весь canvas, и вплотную стоящие стены сшиваются
+      // в единую текстуру сами по себе, без дополнительного кода.
       ctx.fillStyle = pattern;
-      ctx.fillRect(0, 0, width, height);
-      ctx.restore();
+      ctx.fillRect(x, topY, width, height);
 
       // лёгкое затемнение по освещённости грани поверх текстуры — сохраняет
       // то же направленное освещение, что было у процедурного градиента,
@@ -353,11 +355,11 @@ function drawWallTopFace(ctx, wall, x, topY, width, height, topLight) {
   // отзыву пользователя.
   const borderPattern = getWallBorderPattern(ctx);
   if (borderPattern) {
-    ctx.save();
-    ctx.translate(x, topY);
+    // мировые координаты, не translate — та же причина, что у getWallTopPattern
+    // выше: единая фаза паттерна на весь canvas, соседние сегменты бордюрной
+    // стены сшиваются без видимого шва на стыке
     ctx.fillStyle = borderPattern;
-    ctx.fillRect(0, 0, width, height);
-    ctx.restore();
+    ctx.fillRect(x, topY, width, height);
 
     ctx.fillStyle = `rgba(10, 10, 8, ${Math.max(0, -topLight) * 0.4})`;
     ctx.fillRect(x, topY, width, height);

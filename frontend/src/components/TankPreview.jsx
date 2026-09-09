@@ -79,7 +79,12 @@ export default function TankPreview({ tankClass, gunSkin }) {
       // и передача 0 сюда раньше была безобидной (moveAngle не влиял на
       // корпус), а после добавления поворота корпуса заставляла витрину
       // разворачиваться боком — превью должно оставаться axis-aligned.
-      drawTank3D(ctx, fakePlayer, false, TANK_SIZE, t, 0, 0, null, true);
+      // isMe=true (не false!) — иначе корпус всегда рисовался синим спрайтом
+      // "чужого" танка (tankBody_blue) независимо от выбора игрока, что
+      // читалось как "цвет не меняется". В настоящем бою свой/чужой цвет
+      // остаётся как есть (не связан со скином пушки) — это только про
+      // витрину меню, которая должна показывать "себя".
+      drawTank3D(ctx, fakePlayer, true, TANK_SIZE, t, 0, 0, null, true);
 
       raf = requestAnimationFrame(draw);
     };
