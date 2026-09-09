@@ -42,6 +42,47 @@ const BULLET_SPRITE_KIND = {
   ice: "bulletBlue1",
 };
 
+// тонированные версии спрайта пули под конкретный вид оружия — некоторые
+// kind делят один и тот же исходный PNG (bulletRed1 у cannon/ultimate,
+// bulletBlue1 у sniper/ice), различаясь на глаз только силой glow-свечения,
+// которое на скорости в бою почти не читается: пользователь сообщал, что
+// цвет пули "не меняется" после подбора другого оружия — тонировка ОДНОГО
+// круглого пятна поверх спрайта (как раньше делал ice) тоже не покрывала
+// продолговатый силуэт целиком, только середину. Как и для ямы
+// (getTintedPitSprite в render-terrain.js) — тонируем ВЕСЬ силуэт спрайта в
+// ОТДЕЛЬНОМ offscreen canvas через source-atop, кэшируем результат по
+// (spriteName, tintColor), дальше просто drawImage — не красим на основном
+// canvas (там тинт красил бы весь фон под спрайтом, а не только его силуэт).
+const _tintedBulletSpriteCache = new Map(); // key: `${spriteName}|${tintColor}` -> HTMLCanvasElement
+
+function getTintedBulletSprite(spriteName, tintColor, tintAlpha) {
+  const key = `${spriteName}|${tintColor}`;
+  let tinted = _tintedBulletSpriteCache.get(key);
+  if (tinted) return tinted;
+  const sprite = getSprite(spriteName);
+  if (!(sprite.complete && sprite.naturalWidth > 0)) return null;
+
+  tinted = document.createElement("canvas");
+  tinted.width = sprite.naturalWidth;
+  tinted.height = sprite.naturalHeight;
+  const tctx = tinted.getContext("2d");
+  tctx.drawImage(sprite, 0, 0);
+  tctx.globalCompositeOperation = "source-atop";
+  tctx.globalAlpha = tintAlpha;
+  tctx.fillStyle = tintColor;
+  tctx.fillRect(0, 0, tinted.width, tinted.height);
+
+  _tintedBulletSpriteCache.set(key, tinted);
+  return tinted;
+}
+
+// какие kind получают полный тинт силуэта (не просто делят спрайт с другим
+// оружием без отличий в цвете тела снаряда) — {tintColor, tintAlpha}
+const BULLET_TINT = {
+  ice: { color: "#7dd3fc", alpha: 0.75 },
+  ultimate: { color: "#e879f9", alpha: 0.7 },
+};
+
 // Предрендеренные спрайты glow-свечения пули: ctx.createRadialGradient() +
 // 2x addColorStop() на КАЖДУЮ пулю КАЖДЫЙ кадр — при скорострельном оружии
 // (пулемёт/gunner) на экране легко 20-40 пуль одновременно, это 20-40 новых
@@ -262,17 +303,23 @@ export function drawBullet3D(ctx, bullet, t = 0) {
     // все остальные виды снарядов (раньше — процедурный вытянутый эллипс с
     // заострённым носом или, для minigun, простая заливка круга) теперь
     // рисуются готовым PNG-спрайтом пули (см. BULLET_SPRITE_KIND) — та же
-    // идея, что и у стволов/корпуса танка: меньше hand-drawn примитивов
+    // идея, что и у стволов/корпуса танка: меньше hand-drawn примитивов.
+    // Виды, для которых определён BULLET_TINT (делят исходный спрайт с
+    // другим kind и иначе неотличимы на глаз), рисуются ПОЛНОСТЬЮ
+    // тонированной версией спрайта (весь силуэт, не только середина).
     const spriteName = BULLET_SPRITE_KIND[kind] || "bulletDark1";
-    const sprite = getSprite(spriteName);
+    const tint = BULLET_TINT[kind];
+    const sprite = tint
+      ? getTintedBulletSprite(spriteName, tint.color, tint.alpha)
+      : getSprite(spriteName);
     const bodyLen = isMinigun ? r * 1.6 : r * (isUltimate ? 2.4 : 2.0);
     ctx.save();
     ctx.translate(bullet.x, py);
     ctx.rotate(angle);
-    if (sprite.complete && sprite.naturalWidth > 0) {
+    if (sprite && sprite.width > 0) {
       // спрайт нарисован "вверх" (см. drawTank3D) — та же +90° поправка,
       // разворачивает вертикальную пулю вдоль текущей оси X (направление полёта)
-      const bodyWidth = bodyLen * (sprite.naturalWidth / sprite.naturalHeight);
+      const bodyWidth = bodyLen * (sprite.width / sprite.height);
       ctx.rotate(Math.PI / 2);
       ctx.drawImage(sprite, -bodyWidth / 2, -bodyLen / 2, bodyWidth, bodyLen);
     } else {
@@ -285,18 +332,6 @@ export function drawBullet3D(ctx, bullet, t = 0) {
       ctx.fill();
     }
     ctx.restore();
-
-    // морозный тинт поверх спрайта у ice — единственный вид, который делит
-    // базовый спрайт с другим (sniper/bulletBlue1) и должен отличаться на глаз
-    if (kind === "ice") {
-      ctx.save();
-      ctx.translate(bullet.x, py);
-      ctx.fillStyle = "rgba(224, 242, 254, 0.5)";
-      ctx.beginPath();
-      ctx.arc(0, 0, r * 0.7, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
   }
 
   // тонкое пульсирующее кольцо вокруг раскалённого снаряда — усиливает
