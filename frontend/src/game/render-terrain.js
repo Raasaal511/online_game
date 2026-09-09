@@ -7,43 +7,49 @@ import { TILT, SHADOW_DIR, shadeColor, faceLighting, drawRoundedRect } from "./r
 // используется только для прогрессии визуальных трещин по стадиям урона
 const WALL_MAX_HP = 5;
 
-// составной тайл пола из двух вариантов травы (128px каждый, см. Kenney-пак) —
-// собирается ОДИН раз в оффскрин-canvas 256x256 (2x2, варианты вперемешку по
-// диагонали), а не просто ctx.createPattern(tileGrass1) в одиночку: один
-// повторяющийся 128px-тайл на карте 1760x1140 даёт заметный "тираж" — глаз
-// быстро цепляет идентичные квадраты; смешение двух едва различимых вариантов
-// в шахматном порядке ломает эту периодичность почти бесплатно (тот же приём,
+// составной тайл пола из двух вариантов грунта (128px каждый, см. Kenney-пак,
+// tileSand1/2) — собирается ОДИН раз в оффскрин-canvas 256x256 (2x2), а не
+// просто ctx.createPattern(tileSand1) в одиночку: один повторяющийся 128px-
+// тайл на карте 1760x1140 даёт заметный "тираж" — глаз быстро цепляет
+// идентичные квадраты; чередование двух едва различимых вариантов в
+// шахматном порядке ломает эту периодичность почти бесплатно (тот же приём,
 // что и предрендер glow-спрайта пули — дорогая подготовка один раз, потом
-// только дешёвое повторение готовой текстуры)
+// только дешёвое повторение готовой текстуры).
+// Раньше пол был травой (tileGrass) — по прямому отзыву пользователя
+// ("трава не нравится, поле боя должно быть протоптанное, а не зелёное")
+// заменено на чистый грунт без вставок травы: пробная версия со вставками
+// травы в отдельных клетках сетки давала заметные квадратные пятна
+// (нарушение органичности текстуры), однородный грунт этой проблемы не
+// имеет и прямо соответствует запросу "вытоптанное поле".
 let _floorPattern = null; // CanvasPattern, кэшируется по первому успешному созданию
 let _floorPatternCtx = null; // ctx, для которого создан паттерн (Pattern непереносим между context)
 
 function getFloorPattern(ctx) {
   if (_floorPattern && _floorPatternCtx === ctx) return _floorPattern;
 
-  const grass1 = getSprite("tileGrass1");
-  const grass2 = getSprite("tileGrass2");
+  const dirt1 = getSprite("tileSand1");
+  const dirt2 = getSprite("tileSand2");
   // createPattern требует уже декодированное изображение-источник — если
   // спрайты ещё не загрузились, откладываем создание паттерна до следующего
   // кадра (см. фолбэк-заливку в drawFloor ниже), не кэшируем "пустой" результат
-  if (!isSpriteReady(grass1) || !isSpriteReady(grass2)) return null;
+  if (!isSpriteReady(dirt1) || !isSpriteReady(dirt2)) return null;
 
-  const tileSize = grass1.naturalWidth || 128;
+  const tileSize = dirt1.naturalWidth || 128;
   const composite = document.createElement("canvas");
   composite.width = tileSize * 2;
   composite.height = tileSize * 2;
   const cctx = composite.getContext("2d");
-  cctx.drawImage(grass1, 0, 0, tileSize, tileSize);
-  cctx.drawImage(grass2, tileSize, 0, tileSize, tileSize);
-  cctx.drawImage(grass2, 0, tileSize, tileSize, tileSize);
-  cctx.drawImage(grass1, tileSize, tileSize, tileSize, tileSize);
+  cctx.drawImage(dirt1, 0, 0, tileSize, tileSize);
+  cctx.drawImage(dirt2, tileSize, 0, tileSize, tileSize);
+  cctx.drawImage(dirt2, 0, tileSize, tileSize, tileSize);
+  cctx.drawImage(dirt1, tileSize, tileSize, tileSize, tileSize);
 
-  // Kenney-текстура сама по себе — яркая аркадная лужайка (насыщенный
-  // чистый зелёный), а вся остальная сцена (стены, танки, виньетка) в тёмной
-  // военной палитре — прямое наложение спрайта смотрелось резким пятном
-  // "мультяшного газона" посреди мрачной сцены. "multiply" с тёмно-оливковым
-  // тоном притемняет и обесцвечивает тайл ДО совпадения с фоновым градиентом
-  // (#232b24), сохраняя при этом собственный узор травы (не плоская заливка).
+  // Kenney-текстура сама по себе светлая (песочный бежевый), а вся
+  // остальная сцена (стены, танки, виньетка) в тёмной военной палитре —
+  // прямое наложение смотрелось бы резким светлым пятном посреди мрачной
+  // сцены. "multiply" с тёмно-оливковым тоном притемняет и обесцвечивает
+  // тайл ДО совпадения с фоновым градиентом (#232b24), сохраняя при этом
+  // собственный узор грунта (не плоская заливка).
   cctx.globalCompositeOperation = "multiply";
   cctx.fillStyle = "#3d4a3a";
   cctx.fillRect(0, 0, composite.width, composite.height);
@@ -264,13 +270,19 @@ export function drawPitZone3D(ctx, zone, t) {
 // внутренние разрушаемые укрытия (destructible=true в backend/app/game/map.py)
 // все короткие/тонкие (130-160 x 28-30px) — одиночный спрайт мешка с песком
 // (64x44), замощённый вдоль длинной оси, читается как настоящая баррикада из
-// мешков, а не растянутая до неузнаваемости картинка. Внешние границы поля
-// (is_border на сервере, не пересылается на клиент — но других
-// недеструктиблов на карте сейчас нет, так что "не destructible" здесь и
-// значит "граница") остаются процедурной заливкой: та же текстура на полосе
-// 1760x24px растянулась бы в мутное пятно без единого узнаваемого мешка —
-// сознательно оставлено без спрайта, см. бриф задачи.
+// мешков, а не растянутая до неузнаваемости картинка.
 const WALL_TOP_SPRITE = "sandbagBeige";
+
+// внешние границы поля (is_border на сервере, не пересылается на клиент — но
+// других недеструктиблов на карте сейчас нет, так что "не destructible" здесь
+// и значит "граница") — раньше оставались плоской процедурной заливкой:
+// растягивать ОДИНОЧНЫЙ спрайт на всю длину полосы 1760x24px дало бы мутное
+// пятно, но это решается тем же приёмом, что уже работает для sandbagBeige
+// выше — createPattern ЗАМАЩИВАЕТ квадратный спрайт мелкими повторами вдоль
+// стены, а не растягивает один экземпляр. crateMetal (56x56, квадратный
+// металлический контейнер) в ряд читается как настоящее капитальное
+// укрепление периметра, а не декоративная преграда.
+const WALL_BORDER_SPRITE = "crateMetal";
 
 // составной тайл мешков с песком, замощённый по короткой стене — тот же
 // приём кэширования готового паттерна, что и у пола (getFloorPattern), но
@@ -288,19 +300,16 @@ function getWallTopPattern(ctx) {
   return _wallTopPattern;
 }
 
-// градиент верхней грани бордюрных (не destructible) стен — зависит только
-// от height и topLight (оба статичны для данной стены), см. drawWallTopFace
-const _wallTopGradientCache = new Map(); // key: `${height},${topLight}` -> CanvasGradient
+let _wallBorderPattern = null;
+let _wallBorderPatternCtx = null;
 
-function getWallTopGradient(ctx, height, topLight) {
-  const key = `${height},${topLight}`;
-  let grad = _wallTopGradientCache.get(key);
-  if (grad) return grad;
-  grad = ctx.createLinearGradient(0, 0, 0, height);
-  grad.addColorStop(0, shadeColor("#4a4d42", 0.2 + topLight * 0.25));
-  grad.addColorStop(1, shadeColor("#4a4d42", topLight * 0.2));
-  _wallTopGradientCache.set(key, grad);
-  return grad;
+function getWallBorderPattern(ctx) {
+  if (_wallBorderPattern && _wallBorderPatternCtx === ctx) return _wallBorderPattern;
+  const sprite = getSprite(WALL_BORDER_SPRITE);
+  if (!isSpriteReady(sprite)) return null;
+  _wallBorderPattern = ctx.createPattern(sprite, "repeat");
+  _wallBorderPatternCtx = ctx;
+  return _wallBorderPattern;
 }
 
 // верхняя (обращённая к камере "сверху") грань стены — единственная часть
@@ -336,22 +345,35 @@ function drawWallTopFace(ctx, wall, x, topY, width, height, topLight) {
     // что и у пола/пуль в этой кодовой базе)
   }
 
-  // topLight — статическая константа освещения грани (faceLighting(0,-1) у
-  // вызывающего кода, не анимируется), height — геометрия стены, тоже не
-  // меняется в рантайме. Раньше градиент пересоздавался для каждой
-  // бордюрной (не destructible) стены каждый кадр — та же ситуация, что уже
-  // решена для _pitGradientCache/getWallTopPattern, просто этот конкретный
-  // случай был пропущен. createLinearGradient(x, topY, ...) использует
-  // координаты ТЕКУЩЕГО transform-пространства, но сами стопы зависят
-  // только от относительного смещения (0..height), не от абсолютной
-  // позиции — поэтому можно закэшировать один градиент "от 0 до height" и
-  // рисовать его через translate вместо пересоздания под каждую стену.
-  const topGrad = getWallTopGradient(ctx, height, topLight);
-  ctx.save();
-  ctx.translate(x, topY);
+  // бордюрные (внешние границы поля) стены — та же логика замощения
+  // спрайтом, что и у destructible-веток выше, просто другой спрайт
+  // (crateMetal — квадратный металлический контейнер, читается как
+  // капитальное укрепление в ряд, не мешок с песком). Раньше здесь была
+  // плоская процедурная заливка-градиент — "стены так себе" по прямому
+  // отзыву пользователя.
+  const borderPattern = getWallBorderPattern(ctx);
+  if (borderPattern) {
+    ctx.save();
+    ctx.translate(x, topY);
+    ctx.fillStyle = borderPattern;
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+
+    ctx.fillStyle = `rgba(10, 10, 8, ${Math.max(0, -topLight) * 0.4})`;
+    ctx.fillRect(x, topY, width, height);
+    ctx.strokeStyle = "rgba(203, 213, 225, 0.18)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, topY + 0.5, width - 1, height - 1);
+    return;
+  }
+
+  // спрайт ещё не декодирован — фолбэк на процедурный градиент, не
+  // блокируем рендер (тот же silent pop-in, что и везде в файле)
+  const topGrad = ctx.createLinearGradient(x, topY, x, topY + height);
+  topGrad.addColorStop(0, shadeColor("#4a4d42", 0.2 + topLight * 0.25));
+  topGrad.addColorStop(1, shadeColor("#4a4d42", topLight * 0.2));
   ctx.fillStyle = topGrad;
-  ctx.fillRect(0, 0, width, height);
-  ctx.restore();
+  ctx.fillRect(x, topY, width, height);
   ctx.strokeStyle = "rgba(203, 213, 225, 0.18)";
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, topY + 0.5, width - 1, height - 1);
