@@ -346,50 +346,106 @@ function getPitEdgeGradient(ctx, x, y, width, height) {
 // читалось скорее как чёрное пятно, чем как проём вниз) плюс лёгкое
 // анимированное "марево" у самого дна, как нагретый воздух/испарения над
 // пропастью — вместе создают ощущение настоящей глубины без единого спрайта.
+// силуэт ямы — готовый спрайт oilSpill (Kenney, тот же CC0-пак, что и все
+// остальные текстуры), а не нарисованные вручную эллипсы/кольца. По запросу
+// пользователя "убери самописную графику, используй готовые реализации":
+// органическая неровная клякса пятна по форме — то, что нужно для провала в
+// грунте, только перекрашена тинтом source-atop из нефтяного коричневого в
+// тёмно-серый/чёрный (сам силуэт спрайта не трогаем, только цвет поверх
+// непрозрачных пикселей — вне силуэта тинт не выходит).
+const PIT_SPRITE_TINT = "#0a0a0a";
+
+// тонированные версии спрайта пятна — кэшируются в ОТДЕЛЬНОМ offscreen
+// canvas (тот же приём, что и getGlowSprite ниже в файле). Раньше source-atop
+// применялся ПРЯМО на основном canvas: он красит все уже непрозрачные пиксели
+// в целевом fillRect, а к этому моменту там уже лежит нарисованный пол/фон/
+// соседние тайлы ямы — тинт заливал их тоже, поэтому вместо органичной кляксы
+// на экране был виден ровный закрашенный квадрат bounding-box'а спрайта.
+const _tintedPitSpriteCache = new Map(); // key: spriteName -> HTMLCanvasElement
+
+function getTintedPitSprite(spriteName) {
+  let tinted = _tintedPitSpriteCache.get(spriteName);
+  if (tinted) return tinted;
+  const sprite = getSprite(spriteName);
+  if (!isSpriteReady(sprite)) return null;
+
+  tinted = document.createElement("canvas");
+  tinted.width = sprite.naturalWidth;
+  tinted.height = sprite.naturalHeight;
+  const tctx = tinted.getContext("2d");
+  tctx.drawImage(sprite, 0, 0);
+  tctx.globalCompositeOperation = "source-atop";
+  tctx.globalAlpha = 0.94;
+  tctx.fillStyle = PIT_SPRITE_TINT;
+  tctx.fillRect(0, 0, tinted.width, tinted.height);
+
+  _tintedPitSpriteCache.set(spriteName, tinted);
+  return tinted;
+}
+
+function drawPitSpriteTile(ctx, spriteName, x, y, size, rotation) {
+  const tinted = getTintedPitSprite(spriteName);
+  if (!tinted) return false;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rotation);
+  ctx.drawImage(tinted, -size / 2, -size / 2, size, size);
+  ctx.restore();
+  return true;
+}
+
 export function drawPitZone3D(ctx, zone, t) {
   const { x, y, width, height } = zone;
   const cx = x + width / 2;
   const cy = y + height / 2;
 
+  // запасная процедурная заливка — рисуется ВСЕГДА первым слоем (не только
+  // пока спрайт грузится), чтобы под неровными краями кляксы не проглядывал
+  // пол сцены там, где спрайт не дотягивается до прямоугольных углов зоны
   ctx.fillStyle = "#050505";
   ctx.fillRect(x, y, width, height);
-
-  // затухающий край — яма "проваливается" плавно, а не обрывается по
-  // прямоугольнику точной геометрии зоны
   ctx.fillStyle = getPitEdgeGradient(ctx, x, y, width, height);
   ctx.fillRect(x - 20, y - 20, width + 40, height + 40);
 
-  // концентрические эллиптические кольца глубины — каждое следующее к центру
-  // чуть темнее с едва заметной светлой кромкой (имитация обода уступа);
-  // эллипс вместо прямоугольных "ступеней" (первая попытка) — на компактной
-  // яме нижних пропорций прямоугольные вложенные рамки читались как плоские
-  // вложенные квадраты, а не как проём вниз; округлая форма ближе к тому, как
-  // реально проседает грунт вокруг эпицентра
-  const ringCount = 4;
-  const maxDim = Math.max(width, height) * 0.65;
-  for (let i = ringCount; i >= 1; i--) {
-    const frac = i / ringCount;
-    const rw = (width / 2) * frac;
-    const rh = (height / 2) * frac;
-    ctx.fillStyle = `rgba(0, 0, 0, ${0.12 + (ringCount - i) * 0.09})`;
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, rw, rh, 0, 0, Math.PI * 2);
-    ctx.fill();
+  // замащиваем зону несколькими перекрывающимися экземплярами спрайта пятна
+  // (большой + мелкий, с фиксированным псевдослучайным разворотом на тайл) —
+  // органичные неровные края без единой ровной геометрической линии, вместо
+  // одного растянутого на весь прямоугольник спрайта (исказил бы форму клякс)
+  const tileSize = Math.min(width, height) * 0.82;
+  const cols = Math.max(1, Math.round(width / (tileSize * 0.72)));
+  const rows = Math.max(1, Math.round(height / (tileSize * 0.72)));
+  let spritesReady = true;
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const seed = row * 7.13 + col * 3.71;
+      const px = x + ((col + 0.5) / cols) * width + (_rubbleRand(seed) - 0.5) * tileSize * 0.25;
+      const py = y + ((row + 0.5) / rows) * height + (_rubbleRand(seed + 1.7) - 0.5) * tileSize * 0.25;
+      const isLarge = _rubbleRand(seed + 3.3) > 0.35;
+      const size = tileSize * (isLarge ? 1.15 : 0.75);
+      const rotation = _rubbleRand(seed + 5.1) * Math.PI * 2;
+      const ok = drawPitSpriteTile(ctx, isLarge ? "oilSpill_large" : "oilSpill_small", px, py, size, rotation);
+      if (!ok) spritesReady = false;
+    }
   }
-  // едва заметный светлый ободок на паре средних колец — читается как кромка
-  // уступа, ловящая немного света, а не однородный гладкий пролаз в черноту
-  ctx.strokeStyle = "rgba(200, 210, 220, 0.08)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, width * 0.38, height * 0.38, 0, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, width * 0.2, height * 0.2, 0, 0, Math.PI * 2);
-  ctx.stroke();
+
+  // пока спрайты не декодированы — оставляем старые процедурные кольца
+  // глубины как временный фолбэк (тот же silent pop-in, что и везде в файле),
+  // они же и остаются под спрайтами лёгкой тенью для ощущения глубины
+  if (!spritesReady) {
+    const ringCount = 4;
+    for (let i = ringCount; i >= 1; i--) {
+      const frac = i / ringCount;
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.12 + (ringCount - i) * 0.09})`;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, (width / 2) * frac, (height / 2) * frac, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 
   // марево над дном — 2 смещённых полупрозрачных эллипса, медленно "дышащих"
   // синхронно с ембером ниже; создаёт ощущение восходящего тёплого воздуха
   // из пропасти, а не статичной дыры
+  const maxDim = Math.max(width, height) * 0.65;
   const shimmerPhase = t * 0.9;
   for (let i = 0; i < 2; i++) {
     const sway = Math.sin(shimmerPhase + i * Math.PI) * width * 0.08;
@@ -403,18 +459,12 @@ export function drawPitZone3D(ctx, zone, t) {
     ctx.fill();
   }
 
-  // тонкая пульсирующая красная кромка по контуру ямы — читается как
-  // явный сигнал "сюда нельзя", а не просто более тёмный участок пола;
-  // без неё яма была легко спутать с обычной тенью на полу издалека
-  // (оставлено без изменений по явному запросу ранее в этой же сессии)
-  const warnPulse = 0.5 + 0.5 * Math.sin(t * 2.4);
-  ctx.strokeStyle = `rgba(220, 38, 38, ${0.35 + warnPulse * 0.35})`;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(x, y, width, height);
+  // явная красная рамка-обводка убрана по прямому запросу пользователя
+  // ("убери эти красные границы") — вместо геометрической линии сигнал
+  // "опасно" несут только огоньки-угли ниже и естественная тёмная клякса
+  // силуэта пятна, без единой прямой/прямоугольной линии по контуру
 
-  // огоньки на дне — краснее и заметнее прежних нейтрально-серых, читаются
-  // как тлеющие угли на дне пропасти, а не случайные блики глубины
-  // (оставлено без изменений по явному запросу ранее в этой же сессии)
+  // огоньки на дне — тлеющие угли, единственный сохранённый сигнал опасности
   const sparkCount = Math.max(2, Math.round((width * height) / 7000));
   for (let i = 0; i < sparkCount; i++) {
     const sx = x + _rubbleRand(i * 3.7 + x * 0.01) * width;
@@ -791,7 +841,11 @@ export function drawPickup3D(ctx, pickup, colors, t) {
   const z = 18 + bob;
   const shadowScale = 1 - z / 60;
   const isSuper = pickup.kind === "super";
-  const color = colors[pickup.kind] || "#fff";
+  // фолбэк-цвет обязан быть 6-значным hex — ниже он используется как
+  // `${color}55`/`${color}00` (добавление alpha-суффикса к RRGGBB), а
+  // 3-значный "#fff" в таком виде даёт невалидную строку "#fff55" (5 символов
+  // после #, не парсится как цвет) и рушит весь дальнейший рендер пикапа
+  const color = colors[pickup.kind] || "#ffffff";
 
   // тень на полу дышит в противофазе высоте — чем выше объект, тем меньше
   // и бледнее тень, тем сильнее ощущение реального отрыва от земли
@@ -876,29 +930,29 @@ export function drawPickup3D(ctx, pickup, colors, t) {
   ctx.restore();
 
   if (isSuper) {
-    // классическая 7-звезда Dragon Ball: НЕ разбросана по всей сфере — все
-    // звёзды тесно сгруппированы одним компактным кластером близко к
-    // центру (как на настоящем шаре: одна покрупнее + 6 маленьких вплотную
-    // вокруг неё), а не расставлены широко по поверхности
+    // классическая 7-звезда Dragon Ball: 1 звезда строго в центре + кольцо
+    // из 6 звёзд ближе к краю сферы (как на настоящем шаре) — раньше кольцо
+    // спутников было почти на том же расстоянии от центра, что и радиус
+    // самой центральной звезды, из-за чего все 7 звёзд сливались в одно
+    // мутное красное пятно вместо 7 читаемых отдельных звёзд. Дистанция
+    // кольца увеличена так, чтобы каждая звезда была видна целиком и не
+    // перекрывала соседей (проверено измерением радиусов друг относительно
+    // друга, не на глаз).
     ctx.save();
     ctx.beginPath();
     ctx.arc(0, 0, radius, 0, Math.PI * 2);
     ctx.clip();
 
-    drawDragonStar(ctx, 0, 0, radius * 0.34);
+    const centerStarR = radius * 0.22;
+    const satelliteStarR = radius * 0.19;
+    drawDragonStar(ctx, 0, 0, centerStarR);
 
-    const satellites = [
-      { a: 0.5, d: 0.34 },
-      { a: 1.55, d: 0.32 },
-      { a: 2.5, d: 0.36 },
-      { a: 3.4, d: 0.33 },
-      { a: 4.4, d: 0.35 },
-      { a: 5.6, d: 0.33 },
-    ];
-    for (const s of satellites) {
-      const sx = Math.cos(s.a) * radius * s.d;
-      const sy = Math.sin(s.a) * radius * s.d * 0.75;
-      drawDragonStar(ctx, sx, sy, radius * 0.16);
+    const ringDist = radius * 0.56; // >= centerStarR + satelliteStarR, чтобы не наезжать на центр
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
+      const sx = Math.cos(a) * ringDist;
+      const sy = Math.sin(a) * ringDist * 0.82; // лёгкое сплющивание под сферическую перспективу
+      drawDragonStar(ctx, sx, sy, satelliteStarR);
     }
     ctx.restore();
   } else {
