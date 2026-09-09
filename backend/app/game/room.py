@@ -89,6 +89,7 @@ class GameRoom(
         self._miniboss_spawns: list[dict] = []  # мини-босс появился в этот тик (событие для клиента)
         self._level_ups: list[dict] = []  # игрок поднял уровень в этот тик
         self._laser_shots: list[dict] = []  # лазер мини-босса фактически выстрелил в этот тик
+        self._laser_star_hits: list[dict] = []  # лазерная звезда игрока задела цель в этот тик (визуал попадания)
         self._pending_respawns: dict[str, float] = {}  # player_id -> respawn_at
         self._pending_respawn_class: dict[str, str] = {}  # player_id -> tank_class выбранный на следующий респавн
         self._teleports: list[dict] = []  # телепорт игрока сработал в этот тик (визуал на клиенте)
@@ -134,6 +135,7 @@ class GameRoom(
         self._miniboss_spawns = []
         self._level_ups = []
         self._laser_shots = []
+        self._laser_star_hits = []
         self._teleports = []
         self._round_ended_event = None
         self._portal_events = []

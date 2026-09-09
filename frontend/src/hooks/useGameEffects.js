@@ -28,6 +28,7 @@ import {
 const WALL_BREAK_LIFETIME = 0.5;
 const WALL_HIT_LIFETIME = 0.2;
 const PIERCE_HIT_LIFETIME = 0.22; // сквозное попадание снайпера — короткая искра, не мешает читать полёт пули дальше
+const LASER_STAR_HIT_LIFETIME = 0.3; // искра попадания лазерной звезды — чуть заметнее pierce-искры
 
 const EXPLOSION_LIFETIME = 0.6; // сек, длительность визуального взрыва бомбы/ракеты
 const NUKE_EXPLOSION_LIFETIME = 2.2; // сек — гриб растёт и держится заметно дольше обычного взрыва
@@ -91,6 +92,7 @@ export function useGameEffects(playerId, onGameEvent) {
   const wallBreaksRef = useRef([]); // {x, y, age} — эффект разрушения стены
   const wallHitsRef = useRef([]); // {x, y, age} — искра при попадании без разрушения
   const pierceHitsRef = useRef([]); // {x, y, age} — искра сквозного попадания снайпера (пуля летит дальше)
+  const laserStarHitsRef = useRef([]); // {x, y, age} — искра попадания лазерной звезды
   const kickbackRef = useRef(new Map()); // playerId -> 0..1, отдача ствола
   const motionSmoothRef = useRef(new Map()); // playerId -> {emaSpeed, dirX, dirY} — EMA для эффекта разгона
   const laserChargingRef = useRef(new Set()); // playerId'ы, у которых лазер уже заряжался в прошлом кадре
@@ -412,6 +414,15 @@ export function useGameEffects(playerId, onGameEvent) {
     }
     advanceEffects(pierceHitsRef.current, () => dt / PIERCE_HIT_LIFETIME);
 
+    // лазерная звезда задела цель -> искра в точке контакта — без этого
+    // попадание луча читалось как "просто мигает рядом", а не реальный удар
+    if (isNewTick) {
+      for (const hit of current.laser_star_hits || []) {
+        laserStarHitsRef.current.push({ x: hit.x, y: hit.y, age: 0 });
+      }
+    }
+    advanceEffects(laserStarHitsRef.current, () => dt / LASER_STAR_HIT_LIFETIME);
+
     particles.update(dt);
 
     return { isNewTick, smooth, particles, tracks: tracksRef.current };
@@ -428,6 +439,7 @@ export function useGameEffects(playerId, onGameEvent) {
     wallBreaksRef,
     wallHitsRef,
     pierceHitsRef,
+    laserStarHitsRef,
     laserShotsRef,
     teleportEffectsRef,
     armorShieldEffectsRef,

@@ -391,29 +391,58 @@ class WeaponMixin:
 
             if now - player.laser_star_last_tick_at < LASER_STAR_TICK_INTERVAL:
                 continue
+            # угол на НАЧАЛО прошедшего интервала — нужен, чтобы проверять
+            # попадание не по мгновенному положению луча (снимок ровно в
+            # момент тика), а по всей ДУГЕ, которую луч прошёл за интервал.
+            # Раньше: лучи делают полный оборот за 3.5с (~103°/сек), а тик
+            # проверки — раз в 0.25с (~26° поворота за интервал), при узком
+            # луче (14px) на любой разумной дистанции угловая ширина луча
+            # заметно меньше этих 26° — цель часто оказывалась МЕЖДУ двумя
+            # проверенными мгновенными положениями луча, хотя реально он
+            # "прошёл" через неё в процессе поворота. Из-за этого урон
+            # ощущался слабым/непредсказуемым, хотя цифра dmg была верной.
+            prev_tick_at = player.laser_star_last_tick_at
+            interval = now - prev_tick_at if prev_tick_at > 0 else LASER_STAR_TICK_INTERVAL
+            prev_progress = (prev_tick_at - player.laser_star_started_at) / LASER_STAR_DURATION
+            prev_rotation = min(1.0, max(0.0, prev_progress)) * 2 * math.pi
             player.laser_star_last_tick_at = now
             mult = player.level_damage_mult()
             dmg = round(LASER_STAR_TICK_DAMAGE * mult)
             # длина и направление каждого луча не зависят от цели — считаем
             # один раз на 8 лучей, а не заново на каждую пару луч×цель (было
-            # 8 x N_целей вызовов ray_distance_to_field_edge на один тик урона)
-            beams = [
-                (math.cos(a), math.sin(a), ray_distance_to_field_edge(player.x, player.y, a))
-                for a in player.laser_star_angles
-            ]
+            # 8 x N_целей вызовов ray_distance_to_field_edge на один тик урона).
+            # Для каждого луча берём и начальный, и конечный угол интервала —
+            # проверка попадания идёт по обоим "снимкам" плюс промежуточным
+            # сэмплам дуги между ними (см. ARC_SAMPLES ниже), не только по
+            # финальному положению.
+            ARC_SAMPLES = 4  # сэмплов дуги на интервал — компромисс точность/цена
+            beam_arcs = []
+            for i in range(LASER_STAR_BEAM_COUNT):
+                a_end = player.laser_star_angles[i]
+                a_start = player.laser_star_base_angle + prev_rotation + i * (2 * math.pi / LASER_STAR_BEAM_COUNT)
+                samples = []
+                for s in range(ARC_SAMPLES + 1):
+                    frac = s / ARC_SAMPLES
+                    a = a_start + (a_end - a_start) * frac
+                    samples.append((math.cos(a), math.sin(a), ray_distance_to_field_edge(player.x, player.y, a)))
+                beam_arcs.append(samples)
             # снимок целей — см. комментарий в _explode_rocket
             for target in list(self.players.values()):
                 if target.id == player.id or not target.alive:
                     continue
                 tx, ty = target.x - player.x, target.y - player.y
                 hit = False
-                for dx, dy, beam_len in beams:
-                    along = tx * dx + ty * dy
-                    if along < 0 or along > beam_len:
-                        continue
-                    perp = abs(tx * dy - ty * dx)
-                    if perp <= LASER_STAR_WIDTH / 2 + target.size / 2:
-                        hit = True
+                for samples in beam_arcs:
+                    for dx, dy, beam_len in samples:
+                        along = tx * dx + ty * dy
+                        if along < 0 or along > beam_len:
+                            continue
+                        perp = abs(tx * dy - ty * dx)
+                        if perp <= LASER_STAR_WIDTH / 2 + target.size / 2:
+                            hit = True
+                            break
+                    if hit:
                         break
                 if hit:
                     self._apply_damage(target, dmg, player.id)
+                    self._laser_star_hits.append({"x": target.x, "y": target.y})

@@ -5,6 +5,7 @@
 
 import { getSprite, isSpriteReady } from "./sprites.js";
 import { TILT, screenY } from "./render-utils.js";
+import { drawGlowSprite } from "./render-bullets.js";
 
 export function drawFlameCone3D(ctx, player, t) {
   const { x, y, turret_angle: angle } = player;
@@ -791,6 +792,31 @@ export function drawPierceHitSpark3D(ctx, hit, age) {
   ctx.lineWidth = 1.5;
   for (let i = 0; i < 4; i++) {
     const a = (i / 4) * Math.PI * 2 + age * 2;
+    ctx.beginPath();
+    ctx.moveTo(hit.x, hit.y);
+    ctx.lineTo(hit.x + Math.cos(a) * r, hit.y + Math.sin(a) * r);
+    ctx.stroke();
+  }
+}
+
+// Момент попадания лазерной звезды (супер-пикап) — раньше вращающиеся лучи
+// били цель без единого визуального отклика в точке контакта, попадание
+// читалось как "луч просто рядом мигает", а не как реальный удар (тот же
+// класс проблемы, что был у сквозного попадания снайпера выше). Красно-
+// золотая искра, цвет как у самих лучей звезды (см. drawLaserStar3D) —
+// переиспользует уже закэшированный glow-спрайт (drawGlowSprite из
+// render-bullets.js) вместо ctx.createRadialGradient() на каждый вызов,
+// сюда может прилетать несколько попаданий одновременно (до 8 лучей x N целей).
+export function drawLaserStarHitSpark3D(ctx, hit, age) {
+  if (age >= 1) return;
+  const alpha = 1 - age;
+  const r = 5 + age * 10;
+  drawGlowSprite(ctx, "239, 68, 68", hit.x, hit.y, r * 2, 0.9 * alpha);
+
+  ctx.strokeStyle = `rgba(254, 240, 138, ${0.85 * alpha})`;
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 + age * 3;
     ctx.beginPath();
     ctx.moveTo(hit.x, hit.y);
     ctx.lineTo(hit.x + Math.cos(a) * r, hit.y + Math.sin(a) * r);

@@ -27,6 +27,7 @@ import {
   drawWallBreakEffect3D,
   drawWallHitSpark3D,
   drawPierceHitSpark3D,
+  drawLaserStarHitSpark3D,
   drawPitZone3D,
   drawParticles3D,
   computeTankSize,
@@ -90,6 +91,7 @@ export default function GameCanvas({
     wallBreaksRef,
     wallHitsRef,
     pierceHitsRef,
+    laserStarHitsRef,
     laserShotsRef,
     teleportEffectsRef,
     armorShieldEffectsRef,
@@ -508,6 +510,10 @@ export default function GameCanvas({
       // сквозные попадания снайпера — пуля летит дальше, но контакт виден
       for (const hit of pierceHitsRef.current) {
         drawPierceHitSpark3D(ctx, hit, hit.age);
+      }
+      // попадания лазерной звезды — момент контакта луча с целью
+      for (const hit of laserStarHitsRef.current) {
+        drawLaserStarHitSpark3D(ctx, hit, hit.age);
       }
 
       // частицы (взрывы, искры, дым, пламя) поверх всего, с псевдо-3D высотой

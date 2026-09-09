@@ -185,6 +185,7 @@ class BroadcastMixin:
             "miniboss_spawns": self._miniboss_spawns,
             "level_ups": self._level_ups,
             "laser_shots": self._laser_shots,
+            "laser_star_hits": self._laser_star_hits,
             "teleports": self._teleports,
             "round_time_left": (
                 0.0

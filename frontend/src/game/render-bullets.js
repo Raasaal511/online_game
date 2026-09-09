@@ -76,7 +76,7 @@ function getGlowSprite(glowRgb) {
 // нужный радиус через drawImage — альфа применяется через ctx.globalAlpha
 // (спрайт уже непрозрачный в центре и прозрачный на краю), не пересоздавая
 // градиент на каждый вызов
-function drawGlowSprite(ctx, glowRgb, x, y, radius, alpha) {
+export function drawGlowSprite(ctx, glowRgb, x, y, radius, alpha) {
   const sprite = getGlowSprite(glowRgb);
   const prevAlpha = ctx.globalAlpha;
   ctx.globalAlpha = prevAlpha * alpha;
