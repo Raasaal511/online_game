@@ -638,25 +638,78 @@ export function drawTank3D(
     ctx.closePath();
   };
 
-  // корпус башни — тёмный обод (глубина/тень по краю)
-  ctx.fillStyle = shadeSkinColor(spriteColorName, -0.35);
+  // корпус башни — обод СГЛАЖЕННЫМ радиальным градиентом (не сплошная
+  // заливка): свет идёт сверху-слева, поэтому центр градиента смещён туда же,
+  // край темнее — читается как выпуклое кольцо металла, а не плоский
+  // многоугольник с двумя резкими цветовыми зонами
+  const rimGrad = ctx.createRadialGradient(
+    -turretR * 0.35, -turretR * 0.35, turretR * 0.15,
+    0, 0, turretR
+  );
+  rimGrad.addColorStop(0, shadeSkinColor(spriteColorName, -0.05));
+  rimGrad.addColorStop(0.7, shadeSkinColor(spriteColorName, -0.3));
+  rimGrad.addColorStop(1, shadeSkinColor(spriteColorName, -0.5));
+  ctx.fillStyle = rimGrad;
   octagon(turretR);
   ctx.fill();
 
-  // основная плоскость — светлее обода, тот же цвет, что и ствол
-  ctx.fillStyle = turretBase;
+  // основная плоскость — тот же приём, светлее и меньше контраста (это
+  // верхняя, более освещённая часть купола), плавно темнеет к своему краю
+  const topGrad = ctx.createRadialGradient(
+    -turretR * 0.3, -turretR * 0.3, turretR * 0.1,
+    0, 0, turretR * 0.82
+  );
+  topGrad.addColorStop(0, shadeSkinColor(spriteColorName, 0.15));
+  topGrad.addColorStop(0.6, turretBase);
+  topGrad.addColorStop(1, shadeSkinColor(spriteColorName, -0.12));
+  ctx.fillStyle = topGrad;
   octagon(turretR * 0.82);
   ctx.fill();
 
-  // верхняя грань со скосом света (имитирует то же плоское псевдо-3D
-  // освещение "сверху-слева", что уже используется у корпуса/стен)
-  ctx.fillStyle = shadeSkinColor(spriteColorName, 0.22);
+  // верхняя грань купола — раньше один плоский треугольник-скос с резкой
+  // границей; теперь 3 смежные грани с разным наклоном (имитация настоящей
+  // многогранной верхушки купола, а не одной плоской фаски), каждая своим
+  // тоном по мере отдаления от источника света сверху-слева
+  const domeTopY = -turretR * 0.85;
+  const domeMidY = -turretR * 0.15;
+  ctx.fillStyle = shadeSkinColor(spriteColorName, 0.32);
   ctx.beginPath();
-  ctx.moveTo(-turretR * 0.6, -turretR * 0.82);
-  ctx.lineTo(turretR * 0.2, -turretR * 0.82);
-  ctx.lineTo(-turretR * 0.1, -turretR * 0.1);
-  ctx.lineTo(-turretR * 0.75, -turretR * 0.1);
+  ctx.moveTo(-turretR * 0.55, domeTopY);
+  ctx.lineTo(turretR * 0.05, domeTopY);
+  ctx.lineTo(-turretR * 0.12, domeMidY);
+  ctx.lineTo(-turretR * 0.65, domeMidY);
   ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = shadeSkinColor(spriteColorName, 0.18);
+  ctx.beginPath();
+  ctx.moveTo(turretR * 0.05, domeTopY);
+  ctx.lineTo(turretR * 0.35, domeTopY * 0.85);
+  ctx.lineTo(turretR * 0.22, domeMidY);
+  ctx.lineTo(-turretR * 0.12, domeMidY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = shadeSkinColor(spriteColorName, 0.06);
+  ctx.beginPath();
+  ctx.moveTo(-turretR * 0.65, domeMidY);
+  ctx.lineTo(-turretR * 0.12, domeMidY);
+  ctx.lineTo(turretR * 0.22, domeMidY);
+  ctx.lineTo(turretR * 0.1, domeMidY + turretR * 0.14);
+  ctx.lineTo(-turretR * 0.5, domeMidY + turretR * 0.14);
+  ctx.closePath();
+  ctx.fill();
+
+  // яркое узкое блик-пятно там, где свет "отражается" от металла сильнее
+  // всего — то, чего не даёт ни один плоский градиент/грань: настоящий
+  // specular highlight, а не просто более светлый тон
+  const specGrad = ctx.createRadialGradient(
+    -turretR * 0.28, -turretR * 0.55, 0,
+    -turretR * 0.28, -turretR * 0.55, turretR * 0.28
+  );
+  specGrad.addColorStop(0, "rgba(255,255,255,0.55)");
+  specGrad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = specGrad;
+  ctx.beginPath();
+  ctx.ellipse(-turretR * 0.28, -turretR * 0.55, turretR * 0.28, turretR * 0.18, -0.4, 0, Math.PI * 2);
   ctx.fill();
 
   // четыре заклёпки по углам обода — тот же элемент, что уже есть на
@@ -675,16 +728,21 @@ export function drawTank3D(
     ctx.fill();
   }
 
-  // центральный люк — вложенная рамка тёмный→светлый→тёмный, тот же приём,
-  // что у квадратного люка на tankBody_bigRed
+  // центральный люк — радиальный градиент вместо двух сплошных колец:
+  // тёмный обод люка плавно переходит в чуть более светлую крышку, с тем же
+  // смещённым влево-вверх бликом, что и у самой башни (согласованный
+  // источник света для всех деталей купола)
   const hatchR = turretR * 0.4;
-  ctx.fillStyle = shadeSkinColor(spriteColorName, -0.4);
+  const hatchGrad = ctx.createRadialGradient(
+    -hatchR * 0.3, -hatchR * 0.3, hatchR * 0.05,
+    0, 0, hatchR
+  );
+  hatchGrad.addColorStop(0, shadeSkinColor(spriteColorName, 0.05));
+  hatchGrad.addColorStop(0.75, shadeSkinColor(spriteColorName, -0.2));
+  hatchGrad.addColorStop(1, shadeSkinColor(spriteColorName, -0.45));
+  ctx.fillStyle = hatchGrad;
   ctx.beginPath();
   ctx.arc(0, 0, hatchR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = shadeSkinColor(spriteColorName, 0.1);
-  ctx.beginPath();
-  ctx.arc(0, 0, hatchR * 0.62, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.restore();
@@ -722,13 +780,25 @@ export function drawTank3D(
   // же цвета/освещения, что и сам ствол, сглаживает переход визуально.
   ctx.save();
   ctx.translate(barrelPullback, 0);
-  const mantletLen = turretR * 0.9;
+  // конец мантлета УМЫШЛЕННО заходит НИЖЕ по стволу, чем его видимая ширина
+  // (mantletNear) — раньше он заканчивался РОВНО на границе ствола-спрайта
+  // (mantletLen с шириной ровно barrelDrawW/2), и любая пиксельная неточность
+  // на этом стыке (антиалиасинг canvas) читалась как тонкая видимая линия
+  // между мантлетом и стволом. Перекрытие вместо встык — конец мантлета
+  // рисуется ПОД непрозрачным стволом-спрайтом (который рисуется позже),
+  // так что сам шов физически невидим, даже если геометрия не идеальна.
   const mantletNear = barrelDrawW * 0.5;
-  ctx.fillStyle = shadeSkinColor(spriteColorName, -0.1);
+  const mantletLen = turretR * 0.9;
+  const mantletOverlap = mantletLen + barrelDrawH * 0.12;
+  const mantletGrad = ctx.createLinearGradient(0, -turretR * 0.42, 0, turretR * 0.42);
+  mantletGrad.addColorStop(0, shadeSkinColor(spriteColorName, 0.15));
+  mantletGrad.addColorStop(0.5, shadeSkinColor(spriteColorName, -0.05));
+  mantletGrad.addColorStop(1, shadeSkinColor(spriteColorName, -0.3));
+  ctx.fillStyle = mantletGrad;
   ctx.beginPath();
   ctx.moveTo(0, -turretR * 0.42);
-  ctx.lineTo(mantletLen, -mantletNear);
-  ctx.lineTo(mantletLen, mantletNear);
+  ctx.lineTo(mantletOverlap, -mantletNear);
+  ctx.lineTo(mantletOverlap, mantletNear);
   ctx.lineTo(0, turretR * 0.42);
   ctx.closePath();
   ctx.fill();
@@ -736,8 +806,8 @@ export function drawTank3D(
   ctx.fillStyle = "rgba(255,255,255,0.2)";
   ctx.beginPath();
   ctx.moveTo(0, -turretR * 0.42);
-  ctx.lineTo(mantletLen, -mantletNear);
-  ctx.lineTo(mantletLen, -mantletNear * 0.3);
+  ctx.lineTo(mantletOverlap, -mantletNear);
+  ctx.lineTo(mantletOverlap, -mantletNear * 0.3);
   ctx.lineTo(0, -turretR * 0.15);
   ctx.closePath();
   ctx.fill();
