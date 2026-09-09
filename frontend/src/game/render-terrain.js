@@ -181,18 +181,41 @@ function drawPitSpriteTile(ctx, spriteName, x, y, size, rotation) {
   return true;
 }
 
-export function drawPitZone3D(ctx, zone, t) {
+// кэш статичной части ямы (масляные пятна-спрайты + фолбэк-кольца) по её
+// bounding box — эта геометрия не зависит от t (никакой анимации), но
+// раньше перерисовывалась заново 60 раз/сек: двойной вложенный цикл
+// спрайтов (до cols×rows штук) на каждую видимую яму — заметная доля
+// времени кадра, подтверждено профилированием реального рендер-лупа.
+// Марево/угольки ниже (зависят от t) остаются вне кэша, рисуются поверх
+// каждый кадр как и раньше — только статичная подложка теперь drawImage.
+// Ключ по x,y,width,height (не index/id — zone сейчас plain-объект без id,
+// приходит один раз в welcome-пакете как статичная геометрия карты, так что
+// координаты сами по себе стабильный идентификатор конкретной ямы).
+const _pitStaticCache = new Map();
+
+function drawPitZoneStatic(zone) {
   const { x, y, width, height } = zone;
-  const cx = x + width / 2;
-  const cy = y + height / 2;
+  const key = `${x},${y},${width},${height}`;
+  let cached = _pitStaticCache.get(key);
+  if (cached) return cached;
+
+  const pad = 20; // запас под getPitEdgeGradient, выходящий за границы зоны
+  const off = document.createElement("canvas");
+  off.width = width + pad * 2;
+  off.height = height + pad * 2;
+  const ctx = off.getContext("2d");
+  // локальные координаты внутри offscreen-canvas — та же геометрия, просто
+  // сдвинутая на (pad,pad) относительно исходных мировых x,y зоны
+  const lx = pad;
+  const ly = pad;
 
   // запасная процедурная заливка — рисуется ВСЕГДА первым слоем (не только
   // пока спрайт грузится), чтобы под неровными краями кляксы не проглядывал
   // пол сцены там, где спрайт не дотягивается до прямоугольных углов зоны
   ctx.fillStyle = "#050505";
-  ctx.fillRect(x, y, width, height);
-  ctx.fillStyle = getPitEdgeGradient(ctx, x, y, width, height);
-  ctx.fillRect(x - 20, y - 20, width + 40, height + 40);
+  ctx.fillRect(lx, ly, width, height);
+  ctx.fillStyle = getPitEdgeGradient(ctx, lx, ly, width, height);
+  ctx.fillRect(lx - 20, ly - 20, width + 40, height + 40);
 
   // замащиваем зону несколькими перекрывающимися экземплярами спрайта пятна
   // (большой + мелкий, с фиксированным псевдослучайным разворотом на тайл) —
@@ -205,8 +228,8 @@ export function drawPitZone3D(ctx, zone, t) {
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < cols; col++) {
       const seed = row * 7.13 + col * 3.71;
-      const px = x + ((col + 0.5) / cols) * width + (_rubbleRand(seed) - 0.5) * tileSize * 0.25;
-      const py = y + ((row + 0.5) / rows) * height + (_rubbleRand(seed + 1.7) - 0.5) * tileSize * 0.25;
+      const px = lx + ((col + 0.5) / cols) * width + (_rubbleRand(seed) - 0.5) * tileSize * 0.25;
+      const py = ly + ((row + 0.5) / rows) * height + (_rubbleRand(seed + 1.7) - 0.5) * tileSize * 0.25;
       const isLarge = _rubbleRand(seed + 3.3) > 0.35;
       const size = tileSize * (isLarge ? 1.15 : 0.75);
       const rotation = _rubbleRand(seed + 5.1) * Math.PI * 2;
@@ -219,15 +242,33 @@ export function drawPitZone3D(ctx, zone, t) {
   // глубины как временный фолбэк (тот же silent pop-in, что и везде в файле),
   // они же и остаются под спрайтами лёгкой тенью для ощущения глубины
   if (!spritesReady) {
+    const ringCx = lx + width / 2;
+    const ringCy = ly + height / 2;
     const ringCount = 4;
     for (let i = ringCount; i >= 1; i--) {
       const frac = i / ringCount;
       ctx.fillStyle = `rgba(0, 0, 0, ${0.12 + (ringCount - i) * 0.09})`;
       ctx.beginPath();
-      ctx.ellipse(cx, cy, (width / 2) * frac, (height / 2) * frac, 0, 0, Math.PI * 2);
+      ctx.ellipse(ringCx, ringCy, (width / 2) * frac, (height / 2) * frac, 0, 0, Math.PI * 2);
       ctx.fill();
     }
+    // спрайты ещё не готовы — не кэшируем этот "недоделанный" кадр надолго,
+    // следующий вызов попробует снова и закэширует уже с настоящими спрайтами
+    return { canvas: off, offsetX: x - pad, offsetY: y - pad, final: false };
   }
+
+  cached = { canvas: off, offsetX: x - pad, offsetY: y - pad, final: true };
+  _pitStaticCache.set(key, cached);
+  return cached;
+}
+
+export function drawPitZone3D(ctx, zone, t) {
+  const { x, y, width, height } = zone;
+  const cx = x + width / 2;
+  const cy = y + height / 2;
+
+  const staticLayer = drawPitZoneStatic(zone);
+  ctx.drawImage(staticLayer.canvas, staticLayer.offsetX, staticLayer.offsetY);
 
   // марево над дном — 2 смещённых полупрозрачных эллипса, медленно "дышащих"
   // синхронно с ембером ниже; создаёт ощущение восходящего тёплого воздуха
@@ -595,7 +636,43 @@ function _rubbleRand(seed) {
   return s - Math.floor(s);
 }
 
+// кэш готовых руин по id стены — вся геометрия ниже (подложка, камни,
+// дымка) статична между кадрами (никакого t/времени в расчётах нет), но
+// раньше пересчитывалась и перерисовывалась заново 60 раз/сек на каждую
+// разрушенную стену на экране: до 14 камней, каждый — 2 эллипса + многоугольник
+// через цикл, плюс радиальный градиент — заметная доля времени кадра при
+// нескольких руинах одновременно (подтверждено профилированием реального
+// рендер-лупа). Рисуем один раз в offscreen canvas размером с bounding box
+// стены (+ запас под подложку/дымку, выходящие за её границы) и дальше
+// просто drawImage.
+const _wallRuinsCache = new Map(); // wall.id -> { canvas, offsetX, offsetY }
+
 function drawWallRuins3D(ctx, wall) {
+  const { x, y, width, height } = wall;
+
+  let cached = _wallRuinsCache.get(wall.id);
+  if (!cached) {
+    const pad = 24; // с запасом под дымку (width/2+10 от центра) и подложку
+    const canvasW = width + pad * 2;
+    const canvasH = height + pad * 2;
+    const off = document.createElement("canvas");
+    off.width = canvasW;
+    off.height = canvasH;
+    const offCtx = off.getContext("2d");
+    // рисуем в системе координат offscreen-canvas — та же геометрия, что и
+    // раньше, просто со сдвигом (x,y) стены на (pad,pad) внутри канваса
+    drawWallRuinsGeometry(offCtx, { ...wall, x: pad, y: pad });
+    cached = { canvas: off, offsetX: x - pad, offsetY: y - pad };
+    _wallRuinsCache.set(wall.id, cached);
+  }
+
+  ctx.drawImage(cached.canvas, cached.offsetX, cached.offsetY);
+}
+
+// сама отрисовка руин — вызывается ОДИН раз на стену (см. кэш выше), не
+// каждый кадр. Разделено на отдельную функцию, чтобы drawWallRuins3D
+// оставалась простым публичным API (ctx, wall) без утечки деталей кэширования.
+function drawWallRuinsGeometry(ctx, wall) {
   // стена разрушена: рассыпавшаяся куча каменной кладки вместо полноразмерной
   // преграды — читается как "здесь можно проехать", но остаётся заметным
   // ориентиром на карте. Полный редизайн (было: 5 одинаковых плоских кружков
