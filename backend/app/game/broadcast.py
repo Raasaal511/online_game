@@ -199,6 +199,15 @@ class BroadcastMixin:
                 for p in self.portals.values()
             ],
             "portal_events": self._portal_events,
+            # измеритель лагов на клиенте (F3) сравнивает это с локальным
+            # интервалом между state-сообщениями — если tick_ms/loop_ms растут,
+            # тормозит сервер; если сервер стабилен, а у клиента низкий FPS —
+            # проблема в рендере браузера, не в игровой логике
+            "server_perf": {
+                "tick_ms": round(self._last_tick_ms, 2),
+                "broadcast_ms": round(self._last_broadcast_ms, 2),
+                "loop_interval_ms": round(self._last_loop_interval_ms, 2),
+            },
         }
 
         # сериализуем payload один раз за тик (не по разу на каждого клиента) —

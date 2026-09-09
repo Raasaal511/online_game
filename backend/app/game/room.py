@@ -102,17 +102,38 @@ class GameRoom(
         self._init_portals()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
+        # тайминги последнего тика/рассылки/интервала цикла в мс — см. _run_loop
+        # ниже и измеритель лагов на клиенте (broadcast.py -> "server_perf")
+        self._last_tick_ms = 0.0
+        self._last_broadcast_ms = 0.0
+        self._last_loop_interval_ms = DT * 1000
 
     def start(self) -> None:
         if self._task is None:
             self._task = asyncio.create_task(self._run_loop())
 
     async def _run_loop(self) -> None:
+        # метрики для измерителя лагов на клиенте (см. broadcast.py) — сколько
+        # реально заняли последние тики, чтобы отличить "сервер не успевает"
+        # (tick_ms/broadcast_ms растут) от "тормозит только у меня в браузере"
+        # (сервер отдаёт стабильные тайминги, проблема в рендере клиента)
+        last_loop_at = time.perf_counter()
         while True:
             await asyncio.sleep(DT)
+            loop_started_at = time.perf_counter()
+            # время МЕЖДУ итерациями цикла (включая предыдущий broadcast) —
+            # если оно ощутимо больше DT, сервер не укладывается в тикрейт
+            self._last_loop_interval_ms = (loop_started_at - last_loop_at) * 1000
+            last_loop_at = loop_started_at
+
+            tick_started_at = time.perf_counter()
             async with self._lock:
                 self._tick()
+            self._last_tick_ms = (time.perf_counter() - tick_started_at) * 1000
+
+            broadcast_started_at = time.perf_counter()
             await self._broadcast_state()
+            self._last_broadcast_ms = (time.perf_counter() - broadcast_started_at) * 1000
 
     def _elapsed(self) -> float:
         return time.monotonic() - self.started_at

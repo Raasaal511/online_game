@@ -104,14 +104,32 @@ function ClassIcon({ tankClass, active }) {
     const draw = () => {
       ctx.clearRect(0, 0, size, size);
       if (isSpriteReady(sprite)) {
-        // тот же приём, что и у SkinSwatch ниже: спрайт вертикальный в
-        // исходном файле, разворачиваем на 90° для горизонтальной витрины
         ctx.save();
         ctx.translate(size / 2, size / 2);
+
+        // башня-подложка под стволом (тот же приём, что и у SkinSwatch ниже) —
+        // без неё три класса отличались только тонким/толстым стволом одного
+        // и того же цвета и в уменьшенном виде читались почти одинаково;
+        // круглый корпус даёт понятный якорь "это башня танка", а не
+        // абстрактная палочка
+        const turretR = size * 0.3;
+        const turretGrad = ctx.createRadialGradient(-2, -2, 1, 0, 0, turretR);
+        turretGrad.addColorStop(0, "#5fcf7a");
+        turretGrad.addColorStop(1, "#2f8f49");
+        ctx.fillStyle = turretGrad;
+        ctx.globalAlpha = active ? 1 : 0.75;
+        ctx.beginPath();
+        ctx.arc(0, 0, turretR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(0,0,0,0.4)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // спрайт вертикальный в исходном файле, разворачиваем на 90° для
+        // горизонтальной витрины
         ctx.rotate(Math.PI / 2);
         const h = size * 0.82;
         const w = h * (dims.w / dims.h);
-        ctx.globalAlpha = active ? 1 : 0.75;
         ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
         ctx.restore();
       } else {

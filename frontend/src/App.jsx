@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import LoadingScreen from "./components/LoadingScreen.jsx";
 import NicknameForm from "./components/NicknameForm.jsx";
 import GameCanvas from "./components/GameCanvas.jsx";
 import Leaderboard from "./components/Leaderboard.jsx";
@@ -6,6 +7,7 @@ import ChatBox from "./components/ChatBox.jsx";
 import Confetti from "./components/Confetti.jsx";
 import MinibossCompass from "./components/MinibossCompass.jsx";
 import ScoreBoard from "./components/ScoreBoard.jsx";
+import PerfOverlay from "./components/PerfOverlay.jsx";
 import { playRoundEndFanfare } from "./game/sound.js";
 import { useGameSocket } from "./hooks/useGameSocket.js";
 import { useKeyboardInput } from "./hooks/useKeyboardInput.js";
@@ -54,11 +56,17 @@ function formatRoundTime(seconds) {
 }
 
 export default function App() {
+  // спрайты грузятся ОДИН раз при первом заходе в приложение, до показа
+  // формы ника — см. LoadingScreen.jsx/preloadSprites.js. sprites.js кэширует
+  // Image по имени, поэтому повторный вход в меню (после смерти/выхода из
+  // боя) не грузит их заново — assetsReady остаётся true на весь сеанс SPA.
+  const [assetsReady, setAssetsReady] = useState(false);
   const [nickname, setNickname] = useState(null);
   const [tankClass, setTankClass] = useState("gunner");
   const [gunSkin, setGunSkin] = useState("steel");
   const [banners, setBanners] = useState([]); // {id, text, kind}
   const [roundWinner, setRoundWinner] = useState(null); // {nickname, kills} — показ баннера конца раунда
+  const [perfVisible, setPerfVisible] = useState(false); // измеритель лагов, toggle по F3
   const {
     state,
     subscribeState,
@@ -78,6 +86,19 @@ export default function App() {
   } = useGameSocket(nickname, tankClass, gunSkin);
 
   useKeyboardInput(sendInput);
+
+  // F3 — стандартная для игр клавиша дебаг-оверлея (Minecraft и т.п.),
+  // toggle вместо hold, чтобы можно было держать оверлей открытым и играть
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.code === "F3") {
+        e.preventDefault();
+        setPerfVisible((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const handleStart = useCallback((nick, cls, skin) => {
     setTankClass(cls);
@@ -162,6 +183,10 @@ export default function App() {
     const timer = setTimeout(clearDeath, (deathInfo.respawn_in || 2) * 1000);
     return () => clearTimeout(timer);
   }, [deathInfo, clearDeath]);
+
+  if (!assetsReady) {
+    return <LoadingScreen onDone={() => setAssetsReady(true)} />;
+  }
 
   if (!nickname) {
     return <NicknameForm onSubmit={handleStart} />;
@@ -289,6 +314,8 @@ export default function App() {
                 и не заслоняют обзор; текстовые панели (лидерборд/список
                 игроков/чат) вынесены за пределы арены в боковую колонку ниже */}
             {miniboss && me && <MinibossCompass me={me} boss={miniboss} />}
+
+            <PerfOverlay subscribeState={subscribeState} visible={perfVisible} />
 
             {roundWinner?.nickname && <Confetti />}
 

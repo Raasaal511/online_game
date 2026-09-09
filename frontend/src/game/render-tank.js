@@ -25,7 +25,12 @@ function getShadowSprite(spriteName) {
   const tctx = tinted.getContext("2d");
   tctx.drawImage(sprite, 0, 0);
   tctx.globalCompositeOperation = "source-atop";
-  tctx.globalAlpha = 0.45;
+  // alpha ЗДЕСЬ должен быть 1 — source-atop с alpha<1 не тонирует силуэт в
+  // чистый чёрный, а СМЕШИВАЕТ чёрный с исходным цветом спрайта (отсюда был
+  // баг: тень зелёного танка получалась зеленоватой вместо нейтрально-чёрной).
+  // Прозрачность самой тени применяется отдельно — ctx.globalAlpha в месте
+  // отрисовки готового силуэта на основной canvas (см. вызов ниже).
+  tctx.globalAlpha = 1;
   tctx.fillStyle = "#000000";
   tctx.fillRect(0, 0, tinted.width, tinted.height);
 
@@ -188,6 +193,19 @@ function barrelSpriteScale(tankSize, variant) {
   const dims = BARREL_SPRITE_DIMS[variant] || BARREL_SPRITE_DIMS[2];
   const targetLen = tankSize / 2 + 10; // те же пропорции, что у прежней процедурной длины
   return targetLen / dims.h;
+}
+
+// экранный Y центра башни (turret pivot), с учётом псевдо-3D подъёма над
+// полом — та же формула (bodyZ + 8), что использует drawTank3D внутри для
+// самой отрисовки ствола. Нужна снаружи для эффектов, привязанных к дулу
+// (сниперская линия прицела, вспышка выстрела в GameCanvas.jsx) — раньше
+// линия прицела считалась от "сырого" mировогоY на уровне пола (z=0), а
+// реальный ствол рисуется выше на screenY(y, turretZ), из-за чего линия
+// визуально не совпадала со стволом ("шла криво" относительно дула).
+export function getTurretScreenY(y, isMiniboss) {
+  const bodyZ = isMiniboss ? 22 : 10;
+  const turretZ = bodyZ + 8;
+  return screenY(y, turretZ);
 }
 
 export function getMuzzleBarrelLength(tankSize, tankClass, isMiniboss) {
@@ -373,6 +391,11 @@ export function drawTank3D(
   // текущий силуэт корпуса вне зависимости от его поворота
   const shadowSprite = getShadowSprite(bodySpriteName);
   if (shadowSprite) {
+    // прозрачность тени задаётся здесь (не внутри кэшированного силуэта —
+    // тот теперь чисто чёрный, alpha=1, см. getShadowSprite), чтобы source-atop
+    // тонировка не смешивалась с исходным цветом спрайта
+    ctx.save();
+    ctx.globalAlpha = 0.45;
     ctx.drawImage(
       shadowSprite,
       -bodyDrawW / 2 + half * 0.4,
@@ -380,6 +403,7 @@ export function drawTank3D(
       bodyDrawW,
       bodyDrawH
     );
+    ctx.restore();
   }
   if (bodySprite.complete && bodySprite.naturalWidth > 0) {
     ctx.drawImage(bodySprite, -bodyDrawW / 2, topY - bodyDrawH / 2, bodyDrawW, bodyDrawH);
@@ -494,12 +518,32 @@ export function drawTank3D(
   ctx.save();
   ctx.translate(x, turretY);
 
-  // (тень башни на корпусе убрана — раньше это был фиксированный тёмный
-  // эллипс поверх всего диаметра турели, оставшийся от процедурной эры,
-  // который не совпадал по форме/размеру с реальной круглой башней на
-  // спрайте tankBody_* (та уже нарисована с собственным объёмом и тенью
-  // прямо на текстуре) — сверху эллипс читался как отдельное серое пятно
-  // "непонятной тени", не как объём)
+
+  // круглая башня-подложка под ствол — у используемого Kenney-пака спрайт
+  // корпуса (tankBody_*) НЕ содержит башни вообще, только плоский прямоугольный
+  // корпус с гусеницами (проверено попиксельно); без этой подложки ствол
+  // визуально "торчит из пустоты" сбоку корпуса, без объёма/основания под ним.
+  // Цвет синхронизирован с bodySpriteName (свой=зелёный/чужой=синий/босс=красный),
+  // чтобы читалось как единая деталь того же танка, а не чужеродная нашлёпка.
+  const turretBodyColors = {
+    tankBody_green: ["#5fcf7a", "#2f8f49"],
+    tankBody_blue: ["#5fa8e0", "#2d6fae"],
+    tankBody_bigRed: ["#e0645f", "#a8302d"],
+  };
+  const [turretLight, turretDark] = turretBodyColors[bodySpriteName] || turretBodyColors.tankBody_blue;
+  const turretR = tankSize * (isMiniboss ? 0.32 : 0.36);
+  ctx.save();
+  const turretGrad = ctx.createRadialGradient(-turretR * 0.3, -turretR * 0.3, turretR * 0.15, 0, 0, turretR);
+  turretGrad.addColorStop(0, turretLight);
+  turretGrad.addColorStop(1, turretDark);
+  ctx.fillStyle = turretGrad;
+  ctx.beginPath();
+  ctx.arc(0, 0, turretR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.35)";
+  ctx.lineWidth = Math.max(1, tankSize * 0.02);
+  ctx.stroke();
+  ctx.restore();
 
   ctx.rotate(angle);
   // отдача: ствол на короткое время "уезжает" назад при выстреле — kickback

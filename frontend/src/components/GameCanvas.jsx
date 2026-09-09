@@ -33,6 +33,7 @@ import {
   drawParticles3D,
   computeTankSize,
   getMuzzleBarrelLength,
+  getTurretScreenY,
   screenY,
 } from "../game/render3d.js";
 import { unlockAudio } from "../game/sound.js";
@@ -437,7 +438,11 @@ export default function GameCanvas({
           // расстояния до края арены под любым углом из любой точки
           if (obj.data.id === playerId && obj.data.tank_class === "sniper" && obj.data.alive) {
             const aimRange = Math.hypot(fieldWidth, fieldHeight);
-            drawSniperAimLine3D(ctx, obj.data.x, obj.data.y, obj.data.turret_angle, aimRange);
+            // Y должен совпадать с реальным центром башни (screenY с учётом
+            // turretZ-подъёма над полом), не с сырым мировым Y на уровне
+            // земли — иначе линия визуально не совпадает со стволом
+            const turretScreenY = getTurretScreenY(obj.data.y, obj.data.is_miniboss);
+            drawSniperAimLine3D(ctx, obj.data.x, turretScreenY, obj.data.turret_angle, aimRange);
           }
           if (kickback > 0.5) {
             // позиция вспышки должна точно совпадать с реальным концом

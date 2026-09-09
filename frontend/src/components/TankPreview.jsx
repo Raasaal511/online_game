@@ -1,8 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { drawFloor, drawTank3D } from "../game/render3d.js";
 
 const TANK_SIZE = 48;
-const CSS_WIDTH = 260;
 const CSS_HEIGHT = 130;
 
 // Живой canvas-превью танка для меню выбора класса/скина — использует тот
@@ -10,9 +9,27 @@ const CSS_HEIGHT = 130;
 // смена класса или цвета сразу видна на одном и том же танке, включая
 // реальную форму ствола (снайпер длинный, брали двойной, пулемёт-барабан).
 export default function TankPreview({ tankClass, gunSkin }) {
+  const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const propsRef = useRef({ tankClass, gunSkin });
   propsRef.current = { tankClass, gunSkin };
+
+  // ширина берётся из реального размера контейнера (.previewBox растянут на
+  // 100% родителя) вместо жёстко зашитой константы — раньше canvas всегда
+  // рисовался в фиксированные 260px независимо от того, насколько шире была
+  // сама карточка, оставляя пустую полосу справа
+  const [cssWidth, setCssWidth] = useState(260);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect?.width;
+      if (width > 0) setCssWidth(width);
+    });
+    observer.observe(wrap);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -20,9 +37,9 @@ export default function TankPreview({ tankClass, gunSkin }) {
     // рендерим в реальном разрешении экрана (devicePixelRatio), иначе на
     // Retina/HiDPI дисплеях canvas растягивается и выглядит размытым
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    canvas.width = CSS_WIDTH * dpr;
+    canvas.width = cssWidth * dpr;
     canvas.height = CSS_HEIGHT * dpr;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     let raf;
     const start = performance.now();
@@ -31,10 +48,10 @@ export default function TankPreview({ tankClass, gunSkin }) {
       const t = (timestamp - start) / 1000;
       const { tankClass: cls, gunSkin: skin } = propsRef.current;
 
-      ctx.clearRect(0, 0, CSS_WIDTH, CSS_HEIGHT);
-      drawFloor(ctx, CSS_WIDTH, CSS_HEIGHT);
+      ctx.clearRect(0, 0, cssWidth, CSS_HEIGHT);
+      drawFloor(ctx, cssWidth, CSS_HEIGHT);
 
-      const cx = CSS_WIDTH / 2;
+      const cx = cssWidth / 2;
       const cy = CSS_HEIGHT / 2 + 10;
 
       // мягкое пятно света под танком — превью читается как витрина в
@@ -91,19 +108,20 @@ export default function TankPreview({ tankClass, gunSkin }) {
 
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [cssWidth]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        display: "block",
-        width: `${CSS_WIDTH}px`,
-        height: `${CSS_HEIGHT}px`,
-        maxWidth: "100%",
-        borderRadius: "10px",
-        background: "#0b0e12",
-      }}
-    />
+    <div ref={wrapRef} style={{ width: "100%", height: `${CSS_HEIGHT}px` }}>
+      <canvas
+        ref={canvasRef}
+        style={{
+          display: "block",
+          width: `${cssWidth}px`,
+          height: `${CSS_HEIGHT}px`,
+          borderRadius: "10px",
+          background: "#0b0e12",
+        }}
+      />
+    </div>
   );
 }
