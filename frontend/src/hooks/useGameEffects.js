@@ -103,6 +103,16 @@ export function useGameEffects(playerId, onGameEvent) {
   const armorShieldEffectsRef = useRef([]); // {x, y, age} — объёмная сфера-щит при подборе брони
   const hadNukeRef = useRef(false); // была ли ядерка активна в прошлом кадре (для звука появления)
   const shakeRef = useRef({ magnitude: 0 });
+  // throttle звука выстрела — сервер шлёт КАЖДУЮ пулю каждого игрока в
+  // комнате, и цикл ниже проигрывает звук на каждую новую пулю (не только
+  // свою — так и задумано, чужую стрельбу должно быть слышно). При нескольких
+  // активно стреляющих игроках (особенно пулемётчики, ~11 выстр/сек каждый)
+  // это давало десятки Web Audio узлов в секунду на одном клиенте — заметная
+  // доля времени кадра, подтверждено профилированием реального рендер-лупа
+  // на проде. Один звук на короткое окно достаточен на слух (стрельба и так
+  // читается как "шквал"), но не создаёт кучу параллельных узлов.
+  const lastShotSoundAtRef = useRef(0);
+  const SHOT_SOUND_THROTTLE_MS = 40; // не чаще ~25 звуков/сек суммарно по всем игрокам
   // сервер шлёт state 30 раз/сек, а draw() вызывается на каждый requestAnimationFrame
   // (~60 раз/сек) — без этой защиты один и тот же тик (с одним и тем же
   // непустым miniboss_spawns/level_ups/explosions/...) обрабатывался бы 2+ раза
@@ -183,8 +193,16 @@ export function useGameEffects(playerId, onGameEvent) {
             playMinibossSalvoSound();
           }
         } else {
-          const soundFn = WEAPON_SHOOT_SOUND[b.kind] || playShotSound;
-          soundFn();
+          // throttle только для ЧУЖИХ выстрелов — свой выстрел должен звучать
+          // всегда мгновенно (задержка обратной связи на собственное действие
+          // была бы заметна и неприятна игроку)
+          const isOwn = b.owner_id === playerId;
+          const canPlay = isOwn || timestamp - lastShotSoundAtRef.current >= SHOT_SOUND_THROTTLE_MS;
+          if (canPlay) {
+            if (!isOwn) lastShotSoundAtRef.current = timestamp;
+            const soundFn = WEAPON_SHOOT_SOUND[b.kind] || playShotSound;
+            soundFn();
+          }
         }
         kickbackRef.current.set(b.owner_id ?? b.id, 1);
         const angle = Math.atan2(b.vy ?? 0, b.vx ?? 1);
