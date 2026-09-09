@@ -290,9 +290,20 @@ export function playRoundEndFanfare() {
   }
 }
 
+// true после первого успешного getCtx() (контекст создан и не suspended).
+// unlockAudio() вызывается из GameCanvas.jsx на КАЖДЫЙ выстрел (нужно поймать
+// первый пользовательский жест, разблокирующий звук в браузере), но при частой
+// стрельбе (пулемёт ~11 выстр/сек) без этого флага каждый выстрел заново лез
+// в getCtx() → ctx.resume() — пересечение границы Web Audio API не бесплатно
+// даже когда контекст уже запущен; профилирование под нагрузкой показало это
+// заметной долей времени кадра. Once unlocked, дальнейшие вызовы — no-op.
+let audioUnlocked = false;
+
 export function unlockAudio() {
+  if (audioUnlocked) return;
   try {
     getCtx();
+    audioUnlocked = true;
   } catch (e) {
     /* ignore */
   }
