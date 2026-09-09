@@ -19,6 +19,7 @@ import {
   drawNukeExplosion3D,
   drawGroundDust3D,
   drawLaserCharge3D,
+  drawSniperAimLine3D,
   drawLaserShot3D,
   drawLaserStar3D,
   drawTeleportEffect3D,
@@ -430,6 +431,14 @@ export default function GameCanvas({
           }
 
           drawTank3D(ctx, obj.data, obj.data.id === playerId, TANK_SIZE, timestamp / 1000, kickback, accelBoost, moveAngle);
+          // лазерный прицел снайпера — только своему игроку (не телеграф для
+          // противников, личная помощь прицеливания), длина линии — диагональ
+          // поля с запасом, гарантированно длиннее любого реального
+          // расстояния до края арены под любым углом из любой точки
+          if (obj.data.id === playerId && obj.data.tank_class === "sniper" && obj.data.alive) {
+            const aimRange = Math.hypot(fieldWidth, fieldHeight);
+            drawSniperAimLine3D(ctx, obj.data.x, obj.data.y, obj.data.turret_angle, aimRange);
+          }
           if (kickback > 0.5) {
             // позиция вспышки должна точно совпадать с реальным концом
             // ствола, нарисованным внутри drawTank3D — раньше считалась от

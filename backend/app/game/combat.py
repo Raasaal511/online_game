@@ -125,7 +125,7 @@ class CombatMixin:
 
     def _move_bullets(self) -> None:
         from app.game.room import DT
-        from app.game.entities import BULLET_SPEED
+        from app.game.entities import BULLET_SPEED, SNIPER_ACCEL_PER_TICK, SNIPER_MAX_SPEED_MULT
 
         # внешние границы поля уже покрыты периметровыми стенами в WALLS
         # (толщина 24px), а пуля на полной скорости проходит ~23px за тик —
@@ -142,6 +142,19 @@ class CombatMixin:
         for bullet in self.bullets.values():
             if bullet.kind == "flamethrower":
                 continue  # огнемёт не создаёт снарядов, обрабатывается отдельно
+
+            # снайперская пуля разгоняется в полёте (не постоянная скорость,
+            # как у остальных видов оружия) — множитель растёт КАЖДЫЙ тик до
+            # потолка SNIPER_MAX_SPEED_MULT, применяется один раз к vx/vy за
+            # тик (не за под-шаг — иначе прирост зависел бы от числа
+            # substeps, которое само по себе не игровая величина, а деталь
+            # анти-туннелирования)
+            if bullet.kind == "sniper" and bullet.speed_mult < SNIPER_MAX_SPEED_MULT:
+                prev_mult = bullet.speed_mult
+                bullet.speed_mult = min(SNIPER_MAX_SPEED_MULT, prev_mult * SNIPER_ACCEL_PER_TICK)
+                step_mult = bullet.speed_mult / prev_mult
+                bullet.vx *= step_mult
+                bullet.vy *= step_mult
 
             hit_wall = False
             for _ in range(substeps):

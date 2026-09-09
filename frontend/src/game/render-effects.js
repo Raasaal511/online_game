@@ -124,6 +124,26 @@ export function drawLaserCharge3D(ctx, x, y, angle, progress, range) {
   ctx.restore();
 }
 
+// Лазерный прицел снайпера — личная линия прицеливания вдоль ствола,
+// видна ТОЛЬКО своему игроку (не телеграф для противников, в отличие от
+// drawLaserCharge3D мини-босса) — рисуется каждый кадр, пока жив и активен
+// класс sniper, поэтому без градиента/пересоздания на каждый вызов —
+// простой пунктирный штрих, дёшево при частой перерисовке.
+export function drawSniperAimLine3D(ctx, x, y, angle, range) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.strokeStyle = "rgba(103, 232, 249, 0.5)";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([10, 8]);
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(range, 0);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
 export function drawLaserShot3D(ctx, shot, age) {
   // выстрел лазера — короткая, но очень яркая полная вспышка на всю длину
   // луча, затухает за долю секунды (мгновенное попадание, не снаряд)
