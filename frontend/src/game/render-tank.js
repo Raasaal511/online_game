@@ -239,6 +239,39 @@ export function getTurretScreenY(y, isMiniboss) {
   return screenY(y, turretZ);
 }
 
+// накладывает процедурный цилиндрический объём поверх уже нарисованного
+// спрайта ствола — исходные Kenney barrel-спрайты абсолютно плоские (два
+// сплошных тона одного цвета, без единого блика/тени, проверено попиксельно),
+// из-за чего рядом с объёмной процедурной башней (см. drawTank3D, обод/скос
+// света/люк) ствол читался как чужеродная плоская 2D-нашлёпка. source-atop
+// красит только уже непрозрачные пиксели спрайта (силуэт), не выходя за его
+// границы — тот же приём, что уже использует тинт оружия чуть ниже.
+// Вызывать СРАЗУ после drawImage(barrelSprite, ...) в тех же локальных
+// координатах (та же translate/rotate, что и сам спрайт). offsetY — верхний
+// край прямоугольника спрайта (тот же, что был передан в drawImage) — в
+// drawTank3D спрайт рисуется от 0 вверх (offsetY = -drawH), в NicknameForm.jsx
+// свотчи центрируют его по обеим осям (offsetY = -drawH / 2).
+export function drawBarrelVolume(ctx, drawW, drawH, offsetY = -drawH) {
+  ctx.save();
+  ctx.globalCompositeOperation = "source-atop";
+
+  // тёмная грань справа — тень от направленного слева света (тот же угол,
+  // что и скос света на башне)
+  const shade = ctx.createLinearGradient(-drawW / 2, 0, drawW / 2, 0);
+  shade.addColorStop(0, "rgba(255,255,255,0.22)");
+  shade.addColorStop(0.45, "rgba(0,0,0,0)");
+  shade.addColorStop(1, "rgba(0,0,0,0.4)");
+  ctx.fillStyle = shade;
+  ctx.fillRect(-drawW / 2, offsetY, drawW, drawH);
+
+  // узкий блик вдоль левого края — читается как металлический цилиндр, не
+  // плоская полоса
+  ctx.fillStyle = "rgba(255,255,255,0.28)";
+  ctx.fillRect(-drawW / 2, offsetY, drawW * 0.16, drawH);
+
+  ctx.restore();
+}
+
 export function getMuzzleBarrelLength(tankSize, tankClass, isMiniboss) {
   const variant = isMiniboss ? MINIBOSS_BARREL_VARIANT : barrelVariantFor(tankClass);
   const dims = BARREL_SPRITE_DIMS[variant] || BARREL_SPRITE_DIMS[2];
@@ -438,6 +471,26 @@ export function drawTank3D(
   }
   if (bodySprite.complete && bodySprite.naturalWidth > 0) {
     ctx.drawImage(bodySprite, -bodyDrawW / 2, topY - bodyDrawH / 2, bodyDrawW, bodyDrawH);
+
+    // процедурный объём поверх плоского Kenney-спрайта корпуса — тот же
+    // приём и тот же угол света (сверху-слева), что уже применяется к
+    // башне/стволу (см. drawBarrelVolume выше), чтобы весь танк читался как
+    // одна согласованная псевдо-3D деталь, а не плоская декаль с объёмной
+    // башней сверху
+    ctx.save();
+    ctx.globalCompositeOperation = "source-atop";
+    const bodyShade = ctx.createLinearGradient(
+      -bodyDrawW / 2,
+      topY - bodyDrawH / 2,
+      bodyDrawW / 2,
+      topY + bodyDrawH / 2
+    );
+    bodyShade.addColorStop(0, "rgba(255,255,255,0.16)");
+    bodyShade.addColorStop(0.5, "rgba(0,0,0,0)");
+    bodyShade.addColorStop(1, "rgba(0,0,0,0.28)");
+    ctx.fillStyle = bodyShade;
+    ctx.fillRect(-bodyDrawW / 2, topY - bodyDrawH / 2, bodyDrawW, bodyDrawH);
+    ctx.restore();
 
     // золотой прогресс уровня / супер-бафф — тинт "source-atop" красит
     // только уже нарисованные непрозрачные пиксели спрайта (силуэт танка),
@@ -672,6 +725,7 @@ export function drawTank3D(
       ctx.rotate(spriteForwardFix);
       if (barrelSprite.complete && barrelSprite.naturalWidth > 0) {
         ctx.drawImage(barrelSprite, -barrelDrawW / 2, -barrelDrawH, barrelDrawW, barrelDrawH);
+        drawBarrelVolume(ctx, barrelDrawW, barrelDrawH);
       }
       ctx.restore();
     }
@@ -704,6 +758,7 @@ export function drawTank3D(
     ctx.rotate(spriteForwardFix);
     if (barrelSprite.complete && barrelSprite.naturalWidth > 0) {
       ctx.drawImage(barrelSprite, -barrelDrawW / 2, -barrelDrawH, barrelDrawW, barrelDrawH);
+      drawBarrelVolume(ctx, barrelDrawW, barrelDrawH);
     }
     ctx.restore();
   }

@@ -8,6 +8,7 @@ import {
   CLASS_BARREL_VARIANT,
   BARREL_SPRITE_DIMS,
   shadeSkinColor,
+  drawBarrelVolume,
 } from "../game/render3d.js";
 import { getSprite, isSpriteReady } from "../game/sprites.js";
 
@@ -106,6 +107,7 @@ function ClassIcon({ tankClass, active }) {
         const h = size * 0.82;
         const w = h * (dims.w / dims.h);
         ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
+        drawBarrelVolume(ctx, w, h, -h / 2);
         ctx.restore();
       } else {
         raf = requestAnimationFrame(draw);
@@ -166,6 +168,7 @@ function SkinSwatch({ skinId, active, onClick, title }) {
         const h = size * 0.85;
         const w = h * (sprite.naturalWidth / sprite.naturalHeight);
         ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
+        drawBarrelVolume(ctx, w, h, -h / 2);
         ctx.restore();
       } else {
         // силуэт ещё не загрузился — не оставляем свотч пустым несколько
