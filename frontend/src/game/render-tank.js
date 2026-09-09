@@ -780,16 +780,19 @@ export function drawTank3D(
   // же цвета/освещения, что и сам ствол, сглаживает переход визуально.
   ctx.save();
   ctx.translate(barrelPullback, 0);
-  // конец мантлета УМЫШЛЕННО заходит НИЖЕ по стволу, чем его видимая ширина
-  // (mantletNear) — раньше он заканчивался РОВНО на границе ствола-спрайта
-  // (mantletLen с шириной ровно barrelDrawW/2), и любая пиксельная неточность
-  // на этом стыке (антиалиасинг canvas) читалась как тонкая видимая линия
-  // между мантлетом и стволом. Перекрытие вместо встык — конец мантлета
-  // рисуется ПОД непрозрачным стволом-спрайтом (который рисуется позже),
-  // так что сам шов физически невидим, даже если геометрия не идеальна.
+  // мантлет — составная форма: сужающаяся трапеция (широкое основание у
+  // башни → до ширины ствола) + ПРЯМОУГОЛЬНЫЙ хвост СТРОГО той же ширины
+  // (mantletNear), продолженный ещё немного дальше вдоль ствола. Раньше
+  // была только трапеция, чей конец просто сдвигали дальше по X — но два
+  // наклонных ребра трапеции не совпадают с прямой прямоугольной границей
+  // ствола-спрайта НИ В ОДНОЙ точке, поэтому шов был виден независимо от
+  // того, насколько далеко продлить конец. Прямоугольный хвост имеет
+  // параллельные стволу края — на участке перекрытия граница геометрически
+  // идентична, поэтому под непрозрачным стволом (рисуется следующим) её
+  // не видно вообще, а не просто "менее заметно".
   const mantletNear = barrelDrawW * 0.5;
   const mantletLen = turretR * 0.9;
-  const mantletOverlap = mantletLen + barrelDrawH * 0.12;
+  const mantletTailLen = barrelDrawH * 0.15; // с запасом уходит под ствол
   const mantletGrad = ctx.createLinearGradient(0, -turretR * 0.42, 0, turretR * 0.42);
   mantletGrad.addColorStop(0, shadeSkinColor(spriteColorName, 0.15));
   mantletGrad.addColorStop(0.5, shadeSkinColor(spriteColorName, -0.05));
@@ -797,8 +800,10 @@ export function drawTank3D(
   ctx.fillStyle = mantletGrad;
   ctx.beginPath();
   ctx.moveTo(0, -turretR * 0.42);
-  ctx.lineTo(mantletOverlap, -mantletNear);
-  ctx.lineTo(mantletOverlap, mantletNear);
+  ctx.lineTo(mantletLen, -mantletNear);
+  ctx.lineTo(mantletLen + mantletTailLen, -mantletNear);
+  ctx.lineTo(mantletLen + mantletTailLen, mantletNear);
+  ctx.lineTo(mantletLen, mantletNear);
   ctx.lineTo(0, turretR * 0.42);
   ctx.closePath();
   ctx.fill();
@@ -806,8 +811,8 @@ export function drawTank3D(
   ctx.fillStyle = "rgba(255,255,255,0.2)";
   ctx.beginPath();
   ctx.moveTo(0, -turretR * 0.42);
-  ctx.lineTo(mantletOverlap, -mantletNear);
-  ctx.lineTo(mantletOverlap, -mantletNear * 0.3);
+  ctx.lineTo(mantletLen + mantletTailLen, -mantletNear);
+  ctx.lineTo(mantletLen + mantletTailLen, -mantletNear * 0.3);
   ctx.lineTo(0, -turretR * 0.15);
   ctx.closePath();
   ctx.fill();
