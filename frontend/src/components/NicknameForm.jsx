@@ -3,7 +3,12 @@ import { colors, fontFamily, displayFontFamily } from "../ui/theme.js";
 import { TANK_CLASSES, GUN_SKINS } from "../game/tankClasses.js";
 import TankPreview from "./TankPreview.jsx";
 import { IconSword, IconPlay, IconWarning } from "../ui/icons.jsx";
-import { GUN_SKIN_SPRITE_COLOR, CLASS_BARREL_VARIANT, BARREL_SPRITE_DIMS } from "../game/render3d.js";
+import {
+  GUN_SKIN_SPRITE_COLOR,
+  CLASS_BARREL_VARIANT,
+  BARREL_SPRITE_DIMS,
+  shadeSkinColor,
+} from "../game/render3d.js";
 import { getSprite, isSpriteReady } from "../game/sprites.js";
 
 // фон стартового экрана — та же тайловая текстура грунта (Kenney tileSand),
@@ -47,36 +52,6 @@ function useMenuBackground() {
     };
   }, []);
   return url;
-}
-
-// приближённые hex-цвета Kenney-спрайтов по имени (см. GUN_SKIN_SPRITE_COLOR) —
-// нужны только для процедурного круга башни рядом со стволом-спрайтом в
-// SkinSwatch, сам ствол по-прежнему настоящий спрайт, не перекрашенный
-const SKIN_HEX = {
-  Dark: "#4b4636",
-  Red: "#c0392b",
-  Sand: "#d4b483",
-  Green: "#3f9142",
-  Blue: "#3d7bc4",
-};
-
-function shadeSkinColor(spriteColorName, factor) {
-  const hex = SKIN_HEX[spriteColorName] || SKIN_HEX.Dark;
-  const num = parseInt(hex.slice(1), 16);
-  let r = (num >> 16) & 0xff;
-  let g = (num >> 8) & 0xff;
-  let b = num & 0xff;
-  if (factor >= 0) {
-    r += (255 - r) * factor;
-    g += (255 - g) * factor;
-    b += (255 - b) * factor;
-  } else {
-    r *= 1 + factor;
-    g *= 1 + factor;
-    b *= 1 + factor;
-  }
-  const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
-  return `rgb(${clamp(r)}, ${clamp(g)}, ${clamp(b)})`;
 }
 
 // класс-иконка — реальный спрайт ствола ЭТОГО класса (тот же файл и тот же

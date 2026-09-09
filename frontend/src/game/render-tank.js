@@ -89,6 +89,37 @@ export const GUN_SKIN_SPRITE_COLOR = {
   azure: "Blue",
 };
 
+// приближённые hex-цвета Kenney-спрайтов по имени — единый источник для
+// процедурной башни (drawTank3D ниже) и превью в меню (NicknameForm.jsx,
+// SkinSwatch), чтобы цвет башни на витрине и в реальном бою гарантированно
+// совпадал, а не дублировался в двух местах с риском разъехаться
+export const SKIN_HEX = {
+  Dark: "#4b4636",
+  Red: "#c0392b",
+  Sand: "#d4b483",
+  Green: "#3f9142",
+  Blue: "#3d7bc4",
+};
+
+export function shadeSkinColor(spriteColorName, factor) {
+  const hex = SKIN_HEX[spriteColorName] || SKIN_HEX.Dark;
+  const num = parseInt(hex.slice(1), 16);
+  let r = (num >> 16) & 0xff;
+  let g = (num >> 8) & 0xff;
+  let b = num & 0xff;
+  if (factor >= 0) {
+    r += (255 - r) * factor;
+    g += (255 - g) * factor;
+    b += (255 - b) * factor;
+  } else {
+    r *= 1 + factor;
+    g *= 1 + factor;
+    b *= 1 + factor;
+  }
+  const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
+  return `rgb(${clamp(r)}, ${clamp(g)}, ${clamp(b)})`;
+}
+
 const WEAPON_BADGE_COLORS = {
   minigun: "#94a3b8",
   flamethrower: "#d9772f",
@@ -519,30 +550,90 @@ export function drawTank3D(
   ctx.translate(x, turretY);
 
 
-  // круглая башня-подложка под ствол — у используемого Kenney-пака спрайт
-  // корпуса (tankBody_*) НЕ содержит башни вообще, только плоский прямоугольный
-  // корпус с гусеницами (проверено попиксельно); без этой подложки ствол
-  // визуально "торчит из пустоты" сбоку корпуса, без объёма/основания под ним.
-  // Цвет синхронизирован с bodySpriteName (свой=зелёный/чужой=синий/босс=красный),
-  // чтобы читалось как единая деталь того же танка, а не чужеродная нашлёпка.
-  const turretBodyColors = {
-    tankBody_green: ["#5fcf7a", "#2f8f49"],
-    tankBody_blue: ["#5fa8e0", "#2d6fae"],
-    tankBody_bigRed: ["#e0645f", "#a8302d"],
-  };
-  const [turretLight, turretDark] = turretBodyColors[bodySpriteName] || turretBodyColors.tankBody_blue;
-  const turretR = tankSize * (isMiniboss ? 0.32 : 0.36);
+  // цвет башни И ствола — ОБА из скина пушки (gunSkin), не из цвета
+  // игрока/корпуса: это одна физическая деталь (турель), должна краситься
+  // разом. Мини-босс всегда красный вне зависимости от скина — красный тут
+  // индикатор угрозы, а не косметика. Вычисляется до отрисовки башни ниже
+  // (раньше spriteColorName считался только для ствола, уже ПОСЛЕ башни,
+  // которая красилась отдельно по bodySpriteName — из-за этого смена скина
+  // пушки в меню визуально никак не влияла на башню в реальном бою).
+  const spriteColorName = isMiniboss ? "Red" : GUN_SKIN_SPRITE_COLOR[gunSkin] || "Dark";
+  const turretBase = SKIN_HEX[spriteColorName] || SKIN_HEX.Dark;
+
+  // детализированная башня-подложка под ствол — у используемого Kenney-пака
+  // спрайт корпуса (tankBody_*) НЕ содержит настоящей башни, только плоский
+  // прямоугольный корпус с гусеницами (проверено попиксельно) — ствол-спрайт
+  // сам по себе голая полоска без основания. Форма и приём (вложенные слои
+  // сплошного цвета разной яркости, не радиальный градиент-шар) взяты из
+  // уже существующей детали на tankBody_bigRed (мини-босс) — тот же
+  // скруглённый октагон с ободом/заклёпками/центральным люком, чтобы башня
+  // выглядела частью того же пиксель-арт языка, что и остальные спрайты.
+  const turretR = tankSize * (isMiniboss ? 0.34 : 0.38);
   ctx.save();
-  const turretGrad = ctx.createRadialGradient(-turretR * 0.3, -turretR * 0.3, turretR * 0.15, 0, 0, turretR);
-  turretGrad.addColorStop(0, turretLight);
-  turretGrad.addColorStop(1, turretDark);
-  ctx.fillStyle = turretGrad;
-  ctx.beginPath();
-  ctx.arc(0, 0, turretR, 0, Math.PI * 2);
+
+  const octagon = (r) => {
+    const cut = r * 0.4; // срез углов — тот же характер формы, что у люка на bigRed
+    ctx.beginPath();
+    ctx.moveTo(-cut, -r);
+    ctx.lineTo(cut, -r);
+    ctx.lineTo(r, -cut);
+    ctx.lineTo(r, cut);
+    ctx.lineTo(cut, r);
+    ctx.lineTo(-cut, r);
+    ctx.lineTo(-r, cut);
+    ctx.lineTo(-r, -cut);
+    ctx.closePath();
+  };
+
+  // корпус башни — тёмный обод (глубина/тень по краю)
+  ctx.fillStyle = shadeSkinColor(spriteColorName, -0.35);
+  octagon(turretR);
   ctx.fill();
-  ctx.strokeStyle = "rgba(0,0,0,0.35)";
-  ctx.lineWidth = Math.max(1, tankSize * 0.02);
-  ctx.stroke();
+
+  // основная плоскость — светлее обода, тот же цвет, что и ствол
+  ctx.fillStyle = turretBase;
+  octagon(turretR * 0.82);
+  ctx.fill();
+
+  // верхняя грань со скосом света (имитирует то же плоское псевдо-3D
+  // освещение "сверху-слева", что уже используется у корпуса/стен)
+  ctx.fillStyle = shadeSkinColor(spriteColorName, 0.22);
+  ctx.beginPath();
+  ctx.moveTo(-turretR * 0.6, -turretR * 0.82);
+  ctx.lineTo(turretR * 0.2, -turretR * 0.82);
+  ctx.lineTo(-turretR * 0.1, -turretR * 0.1);
+  ctx.lineTo(-turretR * 0.75, -turretR * 0.1);
+  ctx.closePath();
+  ctx.fill();
+
+  // четыре заклёпки по углам обода — тот же элемент, что уже есть на
+  // корпусах (см. углы tankBody_green выше по файлу)
+  ctx.fillStyle = shadeSkinColor(spriteColorName, -0.5);
+  const rivetR = Math.max(1, tankSize * 0.025);
+  const rivetOffset = turretR * 0.68;
+  for (const [rx, ry] of [
+    [-rivetOffset, -rivetOffset],
+    [rivetOffset, -rivetOffset],
+    [-rivetOffset, rivetOffset],
+    [rivetOffset, rivetOffset],
+  ]) {
+    ctx.beginPath();
+    ctx.arc(rx, ry, rivetR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // центральный люк — вложенная рамка тёмный→светлый→тёмный, тот же приём,
+  // что у квадратного люка на tankBody_bigRed
+  const hatchR = turretR * 0.4;
+  ctx.fillStyle = shadeSkinColor(spriteColorName, -0.4);
+  ctx.beginPath();
+  ctx.arc(0, 0, hatchR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = shadeSkinColor(spriteColorName, 0.1);
+  ctx.beginPath();
+  ctx.arc(0, 0, hatchR * 0.62, 0, Math.PI * 2);
+  ctx.fill();
+
   ctx.restore();
 
   ctx.rotate(angle);
@@ -552,10 +643,6 @@ export function drawTank3D(
   // сдвиг применяется к translate() перед отрисовкой спрайта ствола.
   const barrelPullback = -kickback * 5;
 
-  // цвет спрайта ствола: скин из меню (gunSkin) выбирает цветовую линейку
-  // Kenney-пака под турель (GUN_SKIN_SPRITE_COLOR), мини-босс всегда красный
-  // вне зависимости от скина — красный тут индикатор угрозы, а не косметика
-  const spriteColorName = isMiniboss ? "Red" : GUN_SKIN_SPRITE_COLOR[gunSkin] || "Dark";
   const barrelVariant = isMiniboss ? MINIBOSS_BARREL_VARIANT : barrelVariantFor(player.tank_class);
   const barrelDims = BARREL_SPRITE_DIMS[barrelVariant];
   const barrelColorPrefix = { Green: "tankGreen", Blue: "tankBlue", Red: "tankRed", Dark: "tankDark", Sand: "tankSand" }[
