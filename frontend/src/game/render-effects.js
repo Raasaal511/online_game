@@ -697,9 +697,17 @@ export function drawNukeExplosion3D(ctx, explosion, age) {
   }
 }
 
+// разлетающиеся обломки при разрушении стены — раньше 8 прямых линий-щепок,
+// нарисованных вручную (ctx.moveTo/lineTo по кругу), читалось как схематичная
+// геометрия, а не реальный обвал. Destructible-стены в игре текстурированы
+// мешками с песком (sandbagBeige, см. render-terrain.js) — при разрушении
+// логично разлетаются РАЗОРВАННЫЕ мешки того же материала (sandbagBeige_open,
+// тот же CC0-пак), а не абстрактные щепки постороннего материала.
+const WALL_BREAK_SHARD_SPRITE = "sandbagBeige_open";
+
 export function drawWallBreakEffect3D(ctx, effect, age) {
-  // age: 0..1, вспышка пыли/трещин в момент разрушения стены (отдельно от
-  // drawExplosion3D — это не взрыв оружия, а обвал каменной кладки)
+  // age: 0..1, вспышка пыли/обломков в момент разрушения стены (отдельно от
+  // drawExplosion3D — это не взрыв оружия, а обвал баррикады)
   if (age >= 1) return;
   const alpha = 1 - age;
   const radius = 40 + age * 50;
@@ -709,12 +717,37 @@ export function drawWallBreakEffect3D(ctx, effect, age) {
   ctx.arc(effect.x, effect.y, radius, 0, Math.PI * 2);
   ctx.fill();
 
-  // разлетающиеся обломки-щепки по кругу
-  const shardCount = 8;
+  const shardSprite = getSprite(WALL_BREAK_SHARD_SPRITE);
+  const shardCount = 6;
+  if (isSpriteReady(shardSprite)) {
+    const shardAspect = shardSprite.naturalWidth / shardSprite.naturalHeight;
+    for (let i = 0; i < shardCount; i++) {
+      // фиксированный псевдослучайный угол/скорость разлёта на осколок
+      // (детерминированный seed по индексу — не Math.random, чтобы кадр не
+      // "дрожал" пересчётом на каждый вызов)
+      const seed = i * 12.9;
+      const a = (i / shardCount) * Math.PI * 2 + (Math.sin(seed) * 0.4);
+      const dist = (15 + age * 40) * (0.8 + Math.sin(seed * 1.7) * 0.3);
+      const sx = effect.x + Math.cos(a) * dist;
+      const sy = effect.y + Math.sin(a) * dist * 0.6;
+      const shardH = 14 * (1 - age * 0.3);
+      const shardW = shardH * shardAspect;
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(a + age * 4); // осколок кувыркается по мере полёта
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(shardSprite, -shardW / 2, -shardH / 2, shardW, shardH);
+      ctx.restore();
+    }
+    return;
+  }
+
+  // спрайт ещё не декодирован — фолбэк на прежние линии-щепки, не блокируем
+  // рендер (тот же silent pop-in, что и везде в файле)
   ctx.strokeStyle = `rgba(71, 85, 105, ${0.7 * alpha})`;
   ctx.lineWidth = 3;
-  for (let i = 0; i < shardCount; i++) {
-    const a = (i / shardCount) * Math.PI * 2;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
     const dist = 15 + age * 35;
     const sx = effect.x + Math.cos(a) * dist;
     const sy = effect.y + Math.sin(a) * dist * 0.6;
