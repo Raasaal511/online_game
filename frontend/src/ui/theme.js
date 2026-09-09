@@ -13,8 +13,15 @@ export const colors = {
   info: "#38bdf8",
 };
 
-export const fontFamily =
-  "'Segoe UI', system-ui, -apple-system, sans-serif";
+// тело текста — тот же узкий военно-спортивный гротеск, что уже используется
+// на HUD/в самой игре (ScoreBoard/MinibossCompass и т.д.), а не системный
+// Segoe UI — тот читался как обычный сайт-форма, а не экран игры
+export const fontFamily = "'Oswald', 'Segoe UI', system-ui, -apple-system, sans-serif";
+
+// акцентный трафаретный шрифт для заголовков/лейблов — та же военная
+// эстетика, что и текстуры Kenney (стены/укрытия), вместо нейтрального
+// system-ui на заголовке главного меню
+export const displayFontFamily = "'Black Ops One', 'Oswald', sans-serif";
 
 export const panel = {
   background: colors.panel,

@@ -1,10 +1,53 @@
 import { useEffect, useRef, useState } from "react";
-import { colors, panel, fontFamily } from "../ui/theme.js";
+import { colors, fontFamily, displayFontFamily } from "../ui/theme.js";
 import { TANK_CLASSES, GUN_SKINS } from "../game/tankClasses.js";
 import TankPreview from "./TankPreview.jsx";
-import { IconSword, IconPlay } from "../ui/icons.jsx";
+import { IconSword, IconPlay, IconWarning } from "../ui/icons.jsx";
 import { GUN_SKIN_SPRITE_COLOR, CLASS_BARREL_VARIANT, BARREL_SPRITE_DIMS } from "../game/render3d.js";
 import { getSprite, isSpriteReady } from "../game/sprites.js";
+
+// фон стартового экрана — та же тайловая текстура грунта (Kenney tileSand),
+// что и пол в самой игре (см. render-terrain.js getFloorPattern), собранная
+// в offscreen-canvas один раз и дальше переиспользуемая как CSS background —
+// раньше здесь был плоский radial-gradient без единой связи с визуалом
+// самой игры, экран читался как обычная веб-форма, а не часть военной сцены
+let _menuBgDataUrl = null;
+function useMenuBackground() {
+  const [url, setUrl] = useState(_menuBgDataUrl);
+  useEffect(() => {
+    if (_menuBgDataUrl) return;
+    let cancelled = false;
+    const dirt1 = getSprite("tileSand1");
+    const dirt2 = getSprite("tileSand2");
+    const build = () => {
+      if (cancelled) return;
+      if (!isSpriteReady(dirt1) || !isSpriteReady(dirt2)) {
+        requestAnimationFrame(build);
+        return;
+      }
+      const tile = dirt1.naturalWidth || 128;
+      const canvas = document.createElement("canvas");
+      canvas.width = tile * 2;
+      canvas.height = tile * 2;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(dirt1, 0, 0, tile, tile);
+      ctx.drawImage(dirt2, tile, 0, tile, tile);
+      ctx.drawImage(dirt2, 0, tile, tile, tile);
+      ctx.drawImage(dirt1, tile, tile, tile, tile);
+      ctx.globalCompositeOperation = "multiply";
+      ctx.fillStyle = "#232b24";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.globalCompositeOperation = "source-over";
+      _menuBgDataUrl = canvas.toDataURL();
+      setUrl(_menuBgDataUrl);
+    };
+    build();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return url;
+}
 
 // приближённые hex-цвета Kenney-спрайтов по имени (см. GUN_SKIN_SPRITE_COLOR) —
 // нужны только для процедурного круга башни рядом со стволом-спрайтом в
@@ -161,17 +204,36 @@ export default function NicknameForm({ onSubmit }) {
   const [focused, setFocused] = useState(false);
   const [tankClass, setTankClass] = useState("gunner");
   const [gunSkin, setGunSkin] = useState("steel");
+  // showEmptyWarning: пользователь нажал "Играть" без ника — раньше кнопка
+  // была просто disabled без единого объяснения ПОЧЕМУ клик не срабатывает
+  // (кнопка визуально не реагирует, легко решить что она сломана). Триггерим
+  // явную подсказку + встряску поля ввода при попытке отправки пустой формы.
+  const [showEmptyWarning, setShowEmptyWarning] = useState(false);
+  const [shakeInput, setShakeInput] = useState(false);
+
+  const bgUrl = useMenuBackground();
 
   const handleSubmit = (e) => {
     e.preventDefault();
     const trimmed = value.trim();
     if (trimmed.length > 0) {
       onSubmit(trimmed.slice(0, 16), tankClass, gunSkin);
+      return;
     }
+    setShowEmptyWarning(true);
+    setShakeInput(true);
+    setTimeout(() => setShakeInput(false), 400);
   };
 
   return (
-    <div style={styles.page}>
+    <div
+      style={{
+        ...styles.page,
+        ...(bgUrl
+          ? { backgroundImage: `radial-gradient(circle at 50% 20%, rgba(15,23,42,0.55) 0%, rgba(6,10,20,0.82) 70%), url(${bgUrl})` }
+          : null),
+      }}
+    >
       <form onSubmit={handleSubmit} style={styles.form}>
         <div style={styles.badge}>
           <IconSword /> TANK ARENA
@@ -181,15 +243,28 @@ export default function NicknameForm({ onSubmit }) {
           Управляй танком, уничтожай соперников и удерживай вершину рейтинга.
         </p>
         <input
-          style={{ ...styles.input, ...(focused ? styles.inputFocused : null) }}
+          style={{
+            ...styles.input,
+            ...(focused ? styles.inputFocused : null),
+            ...(showEmptyWarning ? styles.inputWarning : null),
+          }}
+          className={shakeInput ? "anim-shake" : ""}
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            if (showEmptyWarning) setShowEmptyWarning(false);
+          }}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           placeholder="Введи ник"
           maxLength={16}
           autoFocus
         />
+        {showEmptyWarning && (
+          <div style={styles.emptyWarning}>
+            <IconWarning /> Сначала введи ник
+          </div>
+        )}
 
         <div style={styles.previewBox}>
           <TankPreview tankClass={tankClass} gunSkin={gunSkin} />
@@ -230,7 +305,12 @@ export default function NicknameForm({ onSubmit }) {
           ))}
         </div>
 
-        <button className="btn-primary-cta" style={styles.button} type="submit" disabled={!value.trim()}>
+        {/* кнопка больше не disabled при пустом нике — раньше нажатие на
+            disabled-кнопку браузер молча игнорирует (событие клика не
+            доходит до onSubmit формы), и showEmptyWarning ниже никогда не
+            успевал сработать. Теперь клик всегда доходит до handleSubmit,
+            который сам решает — отправить форму или показать предупреждение. */}
+        <button className="btn-primary-cta" style={styles.button} type="submit">
           <IconPlay />
           Играть
         </button>
@@ -280,8 +360,12 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+    // фолбэк-градиент, пока текстура пола (см. useMenuBackground) ещё не
+    // декодирована — тот же приём "тихого проявления", что и у спрайтов
+    // на игровом канвасе (см. sprites.js), не блокируем первый рендер
     background:
       "radial-gradient(circle at 50% 20%, #1e293b 0%, #0f172a 55%, #060a14 100%)",
+    backgroundSize: "256px 256px",
     fontFamily,
     boxSizing: "border-box",
     // страница никогда не скроллит целиком — если контенту не хватает
@@ -289,6 +373,11 @@ const styles = {
     overflow: "hidden",
     padding: "16px",
   },
+  // панель формы — та же "военная укреплённая" эстетика, что и HUD-панели в
+  // самом бою: плотный тёмный фон вместо blur-стекла (сравнение прежней и
+  // новой версии показало, что glassmorphism читается как обычный веб-виджет,
+  // не как элемент боевого интерфейса) + двойная рамка (внешняя тёмная,
+  // внутренняя акцентная) имитирует металлическую окантовку панели
   form: {
     display: "flex",
     flexDirection: "column",
@@ -300,7 +389,13 @@ const styles = {
     padding: "24px 32px",
     textAlign: "center",
     boxSizing: "border-box",
-    ...panel,
+    background: "linear-gradient(180deg, rgba(20,26,20,0.94) 0%, rgba(10,14,11,0.96) 100%)",
+    border: `1px solid rgba(148, 163, 184, 0.22)`,
+    borderRadius: "8px",
+    boxShadow:
+      "0 0 0 1px rgba(0,0,0,0.6), 0 16px 40px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.05), inset 0 0 0 6px rgba(0,0,0,0.25)",
+    color: colors.text,
+    fontFamily,
   },
   previewBox: {
     width: "100%",
@@ -321,25 +416,42 @@ const styles = {
     borderStyle: "solid",
     borderColor: colors.panelBorder,
   },
+  // бейдж-нашивка над заголовком — окантованный "жетон", а не голый текст с
+  // цветом акцента, как раньше (тот сливался с обычным веб-лейблом)
   badge: {
-    fontSize: "12px",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    fontSize: "11px",
     letterSpacing: "2px",
-    color: colors.accent,
+    color: "#0a1a0f",
     fontWeight: 700,
-    marginBottom: "4px",
+    fontFamily,
+    background: `linear-gradient(180deg, ${colors.accent} 0%, #16a34a 100%)`,
+    padding: "4px 12px",
+    borderRadius: "999px",
+    boxShadow: "0 2px 0 #0f6b2c, 0 4px 8px rgba(0,0,0,0.35)",
+    marginBottom: "6px",
   },
+  // заголовок трафаретным военным шрифтом (Black Ops One) вместо системного
+  // жирного гротеска — раньше "Dodge Game" читался как обычный заголовок
+  // веб-страницы, теперь как экран настоящей аркады
   title: {
     margin: 0,
-    fontSize: "30px",
-    fontWeight: 800,
+    fontSize: "26px",
+    fontWeight: 400,
     color: colors.text,
-    letterSpacing: "-0.5px",
+    letterSpacing: "1px",
+    fontFamily: displayFontFamily,
+    textShadow: "0 2px 0 rgba(0,0,0,0.6), 0 0 24px rgba(34,197,94,0.25)",
+    textTransform: "uppercase",
   },
   subtitle: {
     margin: "0 0 8px 0",
-    fontSize: "14px",
+    fontSize: "13px",
     color: colors.textMuted,
     lineHeight: 1.5,
+    letterSpacing: "0.3px",
   },
   input: {
     padding: "12px 16px",
@@ -359,6 +471,21 @@ const styles = {
   inputFocused: {
     borderColor: colors.accent,
     boxShadow: `0 0 0 3px ${colors.accentSoft}`,
+  },
+  inputWarning: {
+    borderColor: colors.danger,
+    boxShadow: `0 0 0 3px rgba(239, 68, 68, 0.18)`,
+  },
+  emptyWarning: {
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    fontSize: "12px",
+    fontWeight: 600,
+    color: colors.danger,
+    marginTop: "-4px",
+    width: "100%",
+    textAlign: "left",
   },
   button: {
     padding: "14px 24px",

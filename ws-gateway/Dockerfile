@@ -1,0 +1,17 @@
+FROM golang:1.22-alpine AS build
+
+WORKDIR /src
+
+COPY go.mod ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 go build -o /ws-gateway .
+
+FROM alpine:3.20
+
+COPY --from=build /ws-gateway /usr/local/bin/ws-gateway
+
+EXPOSE 8000
+
+CMD ["ws-gateway"]

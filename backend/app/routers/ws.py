@@ -6,7 +6,9 @@ from app.game.room import game_room
 router = APIRouter()
 
 
-@router.websocket("/ws/game")
+# Путь под /internal/ — этот эндпоинт не смотрит наружу напрямую: публичных
+# клиентов принимает ws-gateway (Go), который проксирует байты сюда 1:1.
+@router.websocket("/internal/ws/game")
 async def game_ws(
     websocket: WebSocket,
     nickname: str = Query(default="Player"),

@@ -8,17 +8,30 @@ services:
     volumes:
       - backend_data:/app/data
     ports:
+      # HTTP API (leaderboard и т.п.) остаётся публичным на 8001 — WS-трафик
+      # (/internal/ws/game) идёт только внутри compose-сети, из ws-gateway.
+      - "8001:8000"
+
+  ws-gateway:
+    build: ./ws-gateway
+    restart: unless-stopped
+    environment:
+      - BACKEND_WS_URL=ws://backend:8000/internal/ws/game
+    depends_on:
+      - backend
+    ports:
       - "8000:8000"
 
   frontend:
     build:
       context: ./frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8001}
         VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000/ws/game}
     restart: unless-stopped
     depends_on:
       - backend
+      - ws-gateway
     ports:
       - "8081:80"
 

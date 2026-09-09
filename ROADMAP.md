@@ -22,21 +22,27 @@
 ## 2. Архитектура
 
 ```
-┌─────────────────┐        WebSocket (/ws/game)        ┌──────────────────────┐
-│   React Client   │ ───────────────────────────────▶  │   FastAPI Server      │
-│  (Canvas render) │ ◀───────────────────────────────  │  Game Loop (asyncio)  │
-└─────────────────┘        REST (/api/leaderboard)      │  - state broadcast    │
-                                                          │  - collision checks   │
-                                                          │  - hit detection      │
-                                                          └──────────┬───────────┘
-                                                                     │
-                                                              SQLAlchemy ORM
-                                                                     │
-                                                          ┌──────────▼───────────┐
-                                                          │   SQLite (game.db)   │
-                                                          │   table: scores      │
-                                                          └───────────────────────┘
+┌─────────────────┐   WebSocket (/ws/game)   ┌──────────────────┐   /internal/ws/game   ┌──────────────────────┐
+│   React Client   │ ───────────────────────▶│   ws-gateway (Go) │──────────────────────▶│   FastAPI Server      │
+│  (Canvas render) │◀─────────────────────── │  proxy, N clients │◀──────────────────────│  Game Loop (asyncio)  │
+└─────────────────┘                          └──────────────────┘                        │  - state broadcast    │
+        │                                                                                 │  - collision checks   │
+        └───────────────── REST (/api/leaderboard, напрямую в backend) ──────────────────▶│  - hit detection      │
+                                                                                            └──────────┬───────────┘
+                                                                                                       │
+                                                                                                SQLAlchemy ORM
+                                                                                                       │
+                                                                                            ┌──────────▼───────────┐
+                                                                                            │   SQLite (game.db)   │
+                                                                                            │   table: scores      │
+                                                                                            └───────────────────────┘
 ```
+
+`ws-gateway` — отдельный Go-сервис, который держит клиентские WebSocket-
+соединения и проксирует байты 1:1 к Python (`/internal/ws/game`). Вся
+игровая логика и тик-цикл остаются в Python; Go снимает с его event loop
+нагрузку по обслуживанию сетевого I/O на "последней миле" (см.
+`ws-gateway/`).
 
 **Модель игрового цикла:**
 - Сервер — источник истины (authoritative server). Ведёт единый game loop (~30-60 тиков/сек) с asyncio.
@@ -60,7 +66,7 @@ web_game/
 │   │   │   └── score.py           # Pydantic-схемы (ScoreOut, ScoreCreate)
 │   │   ├── routers/
 │   │   │   ├── leaderboard.py     # GET /api/leaderboard (топ-3)
-│   │   │   └── ws.py              # WebSocket endpoint /ws/game
+│   │   │   └── ws.py              # WebSocket endpoint /internal/ws/game (принимает только ws-gateway)
 │   │   └── game/
 │   │       ├── engine.py          # GameLoop: тик, физика, коллизии
 │   │       ├── entities.py        # Player, Projectile (dataclasses)
@@ -68,6 +74,12 @@ web_game/
 │   ├── requirements.txt
 │   ├── Dockerfile
 │   └── game.db                    # (создаётся автоматически)
+│
+├── ws-gateway/                    # Go: WS-прокси между браузером и backend (см. раздел 2)
+│   ├── main.go
+│   ├── internal/proxy.go
+│   ├── go.mod
+│   └── Dockerfile
 │
 ├── frontend/
 │   ├── src/
@@ -160,9 +172,9 @@ web_game/
 ### Milestone 9 — Деплой на reg.ru (без домена, по IP)
 - [ ] Аренда/настройка VPS на reg.ru (Ubuntu 22.04 LTS рекомендуется).
 - [ ] Установка Docker + Docker Compose на сервере.
-- [ ] Открыть на сервере/в файрволе порты `80` (frontend) и `8000` (backend REST+WS).
+- [ ] Открыть на сервере/в файрволе порты `80` (frontend), `8000` (ws-gateway, WS) и `8001` (backend REST).
 - [ ] Клонировать репозиторий на сервер (по HTTPS, см. раздел 6a — без домена SSH-ключ GitHub не нужен для клонирования).
-- [ ] Настроить `.env`: `CORS_ORIGINS=http://ВАШ_IP`, `VITE_API_URL=http://ВАШ_IP:8000`, `VITE_WS_URL=ws://ВАШ_IP:8000/ws/game`.
+- [ ] Настроить `.env`: `CORS_ORIGINS=http://ВАШ_IP`, `VITE_API_URL=http://ВАШ_IP:8001`, `VITE_WS_URL=ws://ВАШ_IP:8000/ws/game`.
 - [ ] Деплой через `docker compose up -d --build`.
 - [ ] Настройка автозапуска (`restart: unless-stopped` уже в compose — достаточно, чтобы контейнеры поднимались после реролла VPS).
 - [ ] Бэкап `game.db` (простой cron-скрипт копирования файла).
@@ -267,19 +279,20 @@ def collides(a, b):
    cp .env.example .env
    # заменить ВАШ_IP на реальный IP, например 109.497.xxx.xxx
    CORS_ORIGINS=http://109.497.xxx.xxx:8080
-   VITE_API_URL=http://109.497.xxx.xxx:8000
+   VITE_API_URL=http://109.497.xxx.xxx:8001
    VITE_WS_URL=ws://109.497.xxx.xxx:8000/ws/game
    ```
 6. **Открыть порты в файрволе** (если включён ufw/облачный firewall reg.ru):
    ```bash
    ufw allow 8080/tcp
    ufw allow 8000/tcp
+   ufw allow 8001/tcp
    ```
 7. **Запустить**:
    ```bash
    docker compose --env-file .env up -d --build
    ```
-8. **Проверить**: открыть в браузере `http://<server_ip>:8080` — должна открыться игра; API — `http://<server_ip>:8000/health`.
+8. **Проверить**: открыть в браузере `http://<server_ip>:8080` — должна открыться игра; ws-gateway health — `http://<server_ip>:8000/health`; backend API — `http://<server_ip>:8001/health`.
 9. **Настроить бэкап БД**: cron-задача `cp game.db backups/game-$(date +%F).db` раз в сутки.
 
 **Если порт 80 всё же нужен освободить** (например, чтобы открывать игру без указания порта): проверить, что его занимает — `sudo lsof -i :80` или `sudo ss -tlnp | grep :80` — это обычно `nginx` или `apache2`, предустановленные образом reg.ru. Остановить и отключить автозапуск: `sudo systemctl stop nginx && sudo systemctl disable nginx` (или `apache2` вместо `nginx`), затем в `docker-compose.yml` поменять `"8080:80"` обратно на `"80:80"`.

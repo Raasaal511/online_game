@@ -4,6 +4,35 @@ import { drawIcon } from "./icons.js";
 import { getSprite } from "./sprites.js";
 import { TILT, SHADOW_DIR, screenY, normalize, shortestAngleDiff } from "./render-utils.js";
 
+// силуэтная (не axis-aligned прямоугольная/эллиптическая) тень корпуса —
+// тот же приём, что и getTintedPitSprite в render-terrain.js: тонируем ВЕСЬ
+// силуэт спрайта в чёрный в отдельном offscreen canvas через source-atop и
+// кэшируем результат по имени спрайта, дальше просто drawImage поверх пола.
+// Рисуется той же трансформацией (translate+rotate), что и сам корпус, — тень
+// всегда точно повторяет форму и текущий поворот танка, не квадрат/эллипс,
+// оставшийся неподвижным при повороте.
+const _tintedShadowSpriteCache = new Map(); // key: spriteName -> HTMLCanvasElement
+
+function getShadowSprite(spriteName) {
+  let tinted = _tintedShadowSpriteCache.get(spriteName);
+  if (tinted) return tinted;
+  const sprite = getSprite(spriteName);
+  if (!(sprite.complete && sprite.naturalWidth > 0)) return null;
+
+  tinted = document.createElement("canvas");
+  tinted.width = sprite.naturalWidth;
+  tinted.height = sprite.naturalHeight;
+  const tctx = tinted.getContext("2d");
+  tctx.drawImage(sprite, 0, 0);
+  tctx.globalCompositeOperation = "source-atop";
+  tctx.globalAlpha = 0.45;
+  tctx.fillStyle = "#000000";
+  tctx.fillRect(0, 0, tinted.width, tinted.height);
+
+  _tintedShadowSpriteCache.set(spriteName, tinted);
+  return tinted;
+}
+
 // сглаженный угол корпуса (не башни): playerId -> {angle, lastT}. Раньше
 // (первая интеграция спрайтов) корпус был жёстко axis-aligned — не крутился
 // вообще, только башня. Теперь корпус плавно доворачивается к текущему
@@ -243,12 +272,12 @@ export function drawTank3D(
     ctx.globalAlpha = spawnAlpha * (1 - fp * 0.9);
   }
 
-  // тень корпуса на полу — квадратная под форму корпуса (не овал), смещена
-  // в направлении от света; крупнее у мини-босса пропорционально размеру
-  const shadowDx = SHADOW_DIR.x * half * 0.4;
-  const shadowDy = SHADOW_DIR.y * half * 0.4 * TILT;
-  ctx.fillStyle = "rgba(0,0,0,0.4)";
-  ctx.fillRect(x - half + shadowDx, y - half + shadowDy, tankSize, tankSize);
+  // тень корпуса на полу — раньше axis-aligned fillRect, нарисованный ДО
+  // поворота корпуса (bodyAngle ниже), поэтому при повороте танка квадратная
+  // тень оставалась на месте и торчала углами за пределы уже повёрнутого
+  // спрайта корпуса. Настоящая тень рисуется силуэтом самого спрайта корпуса
+  // (getShadowSprite, вызывается ниже уже ВНУТРИ повёрнутого контекста) —
+  // всегда точно повторяет форму и текущий поворот танка.
 
   // раньше "золочение" с ростом уровня/супер-баффа подмешивалось прямо в
   // цвет процедурного корпуса (mixColor к bodyColor); спрайты тела фиксированы
@@ -336,6 +365,22 @@ export function drawTank3D(
   // аспекту спрайта, тем же приёмом, что и у barrel-спрайтов ниже
   const bodyDrawH = tankSize;
   const bodyDrawW = tankSize * (bodyDims.w / bodyDims.h);
+
+  // тень корпуса силуэтом спрайта — рисуется здесь (уже внутри повёрнутого
+  // на bodyAngle контекста, до самого корпуса) со смещением от света в
+  // ЛОКАЛЬНЫХ координатах танка (не мировых shadowDx/shadowDy выше — те были
+  // для старого axis-aligned fillRect), поэтому тень всегда ложится точно под
+  // текущий силуэт корпуса вне зависимости от его поворота
+  const shadowSprite = getShadowSprite(bodySpriteName);
+  if (shadowSprite) {
+    ctx.drawImage(
+      shadowSprite,
+      -bodyDrawW / 2 + half * 0.4,
+      topY - bodyDrawH / 2 + half * 0.4 * TILT,
+      bodyDrawW,
+      bodyDrawH
+    );
+  }
   if (bodySprite.complete && bodySprite.naturalWidth > 0) {
     ctx.drawImage(bodySprite, -bodyDrawW / 2, topY - bodyDrawH / 2, bodyDrawW, bodyDrawH);
 
@@ -449,15 +494,12 @@ export function drawTank3D(
   ctx.save();
   ctx.translate(x, turretY);
 
-  // тень башни на корпусе — раньше была слишком слабой (0.25 альфа) на фоне
-  // сплошного цветного спрайта башни: читалась не как объёмная тень, а как
-  // будто сама башня частично прозрачная и сквозь неё что-то просвечивает.
-  // Плотнее и чуть смещена — явный контактный контур у основания, а не
-  // полупрозрачное пятно поверх всего круга.
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.beginPath();
-  ctx.ellipse(3, 4, tankSize / 3 + 2, tankSize / 3 + 1, 0, 0, Math.PI * 2);
-  ctx.fill();
+  // (тень башни на корпусе убрана — раньше это был фиксированный тёмный
+  // эллипс поверх всего диаметра турели, оставшийся от процедурной эры,
+  // который не совпадал по форме/размеру с реальной круглой башней на
+  // спрайте tankBody_* (та уже нарисована с собственным объёмом и тенью
+  // прямо на текстуре) — сверху эллипс читался как отдельное серое пятно
+  // "непонятной тени", не как объём)
 
   ctx.rotate(angle);
   // отдача: ствол на короткое время "уезжает" назад при выстреле — kickback
