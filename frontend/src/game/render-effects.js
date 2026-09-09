@@ -414,28 +414,28 @@ export function drawNukeWarning3D(ctx, nuke, t) {
     ctx.stroke();
   }
 
-  // электрические разряды-трещины от центра к краю зоны — учащаются и
-  // становятся ярче ближе к детонации, как нарастающее энергетическое давление
+  // энергетические разряды от центра к краю зоны — раньше рисовались вручную
+  // ломаной линией (сегменты + случайный джиттер), читалось как самопальная
+  // геометрия, а не игровой эффект. Заменено на готовый спрайт вспышки
+  // (shotThin.png — узкий жёлтый луч из того же CC0-пака) повёрнутый и
+  // растянутый по длине — учащаются и становятся ярче ближе к детонации,
+  // как нарастающее энергетическое давление, тот же смысл эффекта.
   const boltCount = 3 + Math.floor(nuke.warning_progress * 5);
-  ctx.strokeStyle = `rgba(254, 240, 138, ${0.5 + fastPulse * 0.4})`;
-  ctx.lineWidth = 1.5;
-  for (let i = 0; i < boltCount; i++) {
-    const seed = i * 37.13 + Math.floor(t * (4 + nuke.warning_progress * 10));
-    const a = (Math.sin(seed) * 0.5 + 0.5) * Math.PI * 2;
-    const boltLen = radius * (0.4 + 0.5 * (Math.sin(seed * 1.7) * 0.5 + 0.5));
-    ctx.beginPath();
-    ctx.moveTo(nuke.x, nuke.y);
-    let px = nuke.x;
-    let py = nuke.y;
-    const segments = 4;
-    for (let s = 1; s <= segments; s++) {
-      const frac = s / segments;
-      const jitter = (Math.sin(seed * 3 + s * 5) * 0.5) * radius * 0.05;
-      px = nuke.x + Math.cos(a) * boltLen * frac + Math.cos(a + Math.PI / 2) * jitter;
-      py = nuke.y + Math.sin(a) * boltLen * frac * 0.55 + Math.sin(a + Math.PI / 2) * jitter * 0.55;
-      ctx.lineTo(px, py);
+  const boltSprite = getSprite("shotThin");
+  if (isSpriteReady(boltSprite)) {
+    const boltAspect = boltSprite.naturalWidth / boltSprite.naturalHeight;
+    for (let i = 0; i < boltCount; i++) {
+      const seed = i * 37.13 + Math.floor(t * (4 + nuke.warning_progress * 10));
+      const a = (Math.sin(seed) * 0.5 + 0.5) * Math.PI * 2;
+      const boltLen = radius * (0.4 + 0.5 * (Math.sin(seed * 1.7) * 0.5 + 0.5));
+      const boltWidth = Math.max(4, boltLen * boltAspect * 0.12);
+      ctx.save();
+      ctx.translate(nuke.x, nuke.y);
+      ctx.rotate(a + Math.PI / 2);
+      ctx.globalAlpha = 0.5 + fastPulse * 0.4;
+      ctx.drawImage(boltSprite, -boltWidth / 2, 0, boltWidth, boltLen);
+      ctx.restore();
     }
-    ctx.stroke();
   }
 
   // тлеющее ядро в центре — тот же спрайт-кадр вспышки (explosion1..5.png),
@@ -456,23 +456,24 @@ export function drawNukeWarning3D(ctx, nuke, t) {
   }
   ctx.restore();
 
-  // мигающий символ радиации поверх спрайтового ядра — учащается по мере
-  // приближения взрыва; сохранён как единственный полностью узнаваемый
-  // "это ядерка" силуэт, символ радиации ни с чем не спутать
+  // мигающий "радиационный трилистник" поверх спрайтового ядра — раньше три
+  // лепестка рисовались вручную дугами (ctx.arc), теперь три экземпляра
+  // готового спрайта вспышки (shotOrange.png) под тем же углом 120°, что и
+  // раньше — силуэт трилистника сохранён (единственный однозначно
+  // узнаваемый "это ядерка" элемент), но каждый лепесток теперь настоящий
+  // спрайт, не нарисованная от руки геометрия
   const blinkSpeed = 3 + nuke.warning_progress * 14;
   const blink = Math.sin(t * blinkSpeed) > 0;
-  if (blink) {
-    ctx.fillStyle = "#fef08a";
+  const radSprite = getSprite("shotOrange");
+  if (blink && isSpriteReady(radSprite)) {
+    const petalH = 22;
+    const petalW = petalH * (radSprite.naturalWidth / radSprite.naturalHeight);
     ctx.save();
     ctx.translate(nuke.x, nuke.y);
     for (let i = 0; i < 3; i++) {
       ctx.save();
       ctx.rotate((i / 3) * Math.PI * 2);
-      ctx.beginPath();
-      ctx.moveTo(0, -6);
-      ctx.arc(0, 0, 16, -0.5, 0.5);
-      ctx.closePath();
-      ctx.fill();
+      ctx.drawImage(radSprite, -petalW / 2, -petalH - 4, petalW, petalH);
       ctx.restore();
     }
     ctx.fillStyle = "#7f1d1d";
