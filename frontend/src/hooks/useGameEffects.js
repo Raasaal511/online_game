@@ -70,6 +70,13 @@ function advanceEffects(list, ageStep) {
 
 const INTERP_SPEED = 12; // выше = быстрее "догоняет" серверную позицию
 
+// dead reckoning: сколько максимум ЭКСТРАПОЛИРОВАТЬ позицию вперёд по
+// последней известной скорости, если новый тик задерживается (плохая
+// сеть/джиттер) — секунд. Дальше этого предела точность экстраполяции
+// (движение по прямой без учёта столкновений/поворотов) уже хуже, чем
+// просто стоять на месте, поэтому клампим, а не продолжаем бесконечно.
+const DEAD_RECKON_MAX_SEC = 0.25;
+
 // Владеет всеми ref'ами, отслеживающими визуальные/звуковые эффекты игры между
 // кадрами (сглаженные позиции, партиклы, следы гусениц, вспышки взрывов/лазеров/
 // телепортов/подборов и т.д.), и инкапсулирует логику детектирования игровых
@@ -80,6 +87,17 @@ const INTERP_SPEED = 12; // выше = быстрее "догоняет" сер�
 export function useGameEffects(playerId, onGameEvent) {
   // сглаженные (интерполированные) позиции/углы игроков для плавного рендера
   const smoothRef = useRef(new Map());
+  // dead reckoning: playerId -> {x, y, vx, vy, receivedAt} — "якорь" из
+  // ПОСЛЕДНЕГО РЕАЛЬНОГО серверного тика (не путать со smooth, который уже
+  // сглажен к цели). Раньше при задержке/джиттере сети следующий тик мог
+  // не прийти вовремя — цель для smooth-lerp оставалась ЗАСТЫВШЕЙ на месте
+  // последнего известного p.x/p.y, и танк визуально "тормозил и дёргался"
+  // ровно в момент лага, даже если он продолжал реально двигаться. Теперь
+  // между тиками позиция ЭКСТРАПОЛИРУЕТСЯ вперёд по последней известной
+  // скорости (vx/vy уже приходят в state), и smooth подтягивается к этой
+  // экстраполированной точке — движение остаётся плавным сквозь джиттер,
+  // не залипая на старой точке до следующего реального обновления.
+  const deadReckonRef = useRef(new Map());
   const particlesRef = useRef(createParticleSystem());
   const tracksRef = useRef(createTrackSystem());
   const lastBulletPos = useRef(new Map());
@@ -136,16 +154,43 @@ export function useGameEffects(playerId, onGameEvent) {
     const smooth = smoothRef.current;
     const seenIds = new Set();
 
-    // обновляем сглаженные позиции к последним серверным данным
+    // на КАЖДЫЙ новый серверный тик обновляем якорь dead reckoning реальными
+    // данными (позиция + скорость + момент получения) — НЕ на каждый вызов
+    // processTick, иначе якорь тоже "застывал" бы между тиками так же, как
+    // раньше застывала цель интерполяции
+    if (isNewTick) {
+      for (const p of current.players || []) {
+        deadReckonRef.current.set(p.id, {
+          x: p.x,
+          y: p.y,
+          vx: p.vx ?? 0,
+          vy: p.vy ?? 0,
+          angle: p.turret_angle,
+          receivedAt: timestamp,
+        });
+      }
+    }
+
+    // обновляем сглаженные позиции к ЭКСТРАПОЛИРОВАННОЙ (не сырой серверной)
+    // цели — см. комментарий у deadReckonRef выше
     for (const p of current.players || []) {
       seenIds.add(p.id);
+      const anchor = deadReckonRef.current.get(p.id);
+      let targetX = p.x;
+      let targetY = p.y;
+      if (anchor) {
+        const elapsed = Math.min(DEAD_RECKON_MAX_SEC, Math.max(0, (timestamp - anchor.receivedAt) / 1000));
+        targetX = anchor.x + anchor.vx * elapsed;
+        targetY = anchor.y + anchor.vy * elapsed;
+      }
+
       const prev = smooth.get(p.id);
       if (!prev) {
-        smooth.set(p.id, { x: p.x, y: p.y, angle: p.turret_angle });
+        smooth.set(p.id, { x: targetX, y: targetY, angle: p.turret_angle });
       } else {
         const t = Math.min(1, INTERP_SPEED * dt);
-        prev.x += (p.x - prev.x) * t;
-        prev.y += (p.y - prev.y) * t;
+        prev.x += (targetX - prev.x) * t;
+        prev.y += (targetY - prev.y) * t;
         prev.angle = lerpAngle(prev.angle, p.turret_angle, t);
       }
     }
@@ -168,6 +213,9 @@ export function useGameEffects(playerId, onGameEvent) {
     }
     for (const id of knownAliveState.current.keys()) {
       if (!seenIds.has(id)) knownAliveState.current.delete(id);
+    }
+    for (const id of deadReckonRef.current.keys()) {
+      if (!seenIds.has(id)) deadReckonRef.current.delete(id);
     }
 
     const particles = particlesRef.current;
