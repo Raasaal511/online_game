@@ -26,16 +26,10 @@ var upgrader = websocket.Upgrader{
 const (
 	pongWait   = 60 * time.Second
 	pingPeriod = 30 * time.Second
-	// writeWait — максимум, сколько WriteMessage/WriteControl может блокировать
-	// вызывающую горутину. Без явного дедлайна gorilla/websocket ждёт запись
-	// НЕОГРАНИЧЕННО долго, если у одной из сторон подвисла отправка (медленный
-	// клиент, TCP-буфер полон) — а поскольку writeMu общий между pipe() и
-	// pingLoop() на одно и то же соединение, зависшая запись держит мьютекс и
-	// блокирует ВСЕ последующие тики к этому клиенту, пока запись не пройдёт
-	// или само соединение не порвётся по read-таймауту. Это точное совпадение
-	// с наблюдаемым паттерном "обычно ~34мс между тиками, изредка скачок до
-	// сотен мс" — сейчас без верхней границы такой скачок мог длиться сколько
-	// угодно.
+	// writeWait — максимум, сколько один WriteMessage/WriteControl может
+	// блокировать вызывающую горутину. Без явного дедлайна gorilla/websocket
+	// ждёт запись НЕОГРАНИЧЕННО долго при подвисшей отправке (медленный
+	// клиент, TCP-буфер полон).
 	writeWait = 5 * time.Second
 )
 
@@ -45,8 +39,8 @@ var BackendWSURL string
 
 // wsConn оборачивает *websocket.Conn мьютексом на запись — gorilla/websocket
 // не потокобезопасен для конкурентных Write* с разных горутин, а нам нужно
-// писать в одно и то же соединение и из pipe (проксируемые сообщения), и
-// из pingLoop (keepalive) одновременно.
+// писать в одно и то же соединение и из writer-лупа (см. ниже), и из
+// pingLoop (keepalive) одновременно.
 type wsConn struct {
 	*websocket.Conn
 	writeMu sync.Mutex
@@ -63,6 +57,66 @@ func (c *wsConn) writePing() error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	return c.Conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait))
+}
+
+// latestMsg — буфер ровно на одно (последнее) сообщение с сигналом "есть
+// новые данные". Используется для направления upstream->client: если запись
+// клиенту физически медленная (плохая сеть конкретно у него), reader-горутина
+// НЕ ждёт, пока writer освободится — она просто перезаписывает буфер новым
+// тиком и продолжает читать следующий от Python. writer забирает из буфера
+// только САМЫЙ СВЕЖИЙ тик, когда сам освобождается — устаревшие тики,
+// которые клиент всё равно не успел бы отрисовать вовремя, просто дропаются
+// вместо накопления в очереди. Раньше pipe() был одним синхронным циклом
+// read->write: медленная запись этому клиенту напрямую откладывала чтение
+// СЛЕДУЮЩЕГО тика для него же, что и давало наблюдаемые скачки интервала
+// между тиками (сервер стабильно отдаёт ~33мс, а клиент с плохой сетью видел
+// p95 до 130+мс) — не баг, а физика TCP-записи, но с dropping-буфером
+// клиент видит реже обновлений на плохой сети, зато без НАКОПЛЕНИЯ задержки.
+type latestMsg struct {
+	mu       sync.Mutex
+	cond     *sync.Cond
+	msgType  int
+	data     []byte
+	hasData  bool
+	closed   bool
+}
+
+func newLatestMsg() *latestMsg {
+	m := &latestMsg{}
+	m.cond = sync.NewCond(&m.mu)
+	return m
+}
+
+func (m *latestMsg) Set(msgType int, data []byte) {
+	m.mu.Lock()
+	m.msgType = msgType
+	m.data = data
+	m.hasData = true
+	m.mu.Unlock()
+	m.cond.Signal()
+}
+
+// Wait блокируется, пока не появится новое сообщение или буфер не закрыт.
+// Возвращает ok=false, если закрыт и данных больше не будет.
+func (m *latestMsg) Wait() (msgType int, data []byte, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for !m.hasData && !m.closed {
+		m.cond.Wait()
+	}
+	if m.closed && !m.hasData {
+		return 0, nil, false
+	}
+	msgType, data = m.msgType, m.data
+	m.hasData = false
+	return msgType, data, true
+}
+
+func (m *latestMsg) Close() {
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	m.cond.Broadcast()
 }
 
 // GameHandler принимает клиента на /ws/game, поднимает parallel-соединение
@@ -104,14 +158,19 @@ func GameHandler(w http.ResponseWriter, r *http.Request) {
 		_ = rawUpstreamConn.Close()
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(4)
+	toClientBuf := newLatestMsg()
 
-	// client -> upstream: input/aim/shoot/chat/... от браузера идут в Python как есть.
+	var wg sync.WaitGroup
+	wg.Add(5)
+
+	// client -> upstream: input/aim/shoot/chat/... от браузера. Синхронный
+	// read->write как раньше — это редкие events (не 30/сек тики), и каждый
+	// важен (нельзя дропнуть чей-то выстрел), задержка на запись сюда не
+	// вызывала наблюдаемую проблему.
 	go func() {
 		defer wg.Done()
 		defer once.Do(closeBoth)
-		pipe(clientConn, upstreamConn)
+		pipeSync(clientConn, upstreamConn)
 	}()
 	go func() {
 		defer wg.Done()
@@ -119,11 +178,19 @@ func GameHandler(w http.ResponseWriter, r *http.Request) {
 		pingLoop(clientConn)
 	}()
 
-	// upstream -> client: welcome/state/chat/death от Python идут в браузер как есть.
+	// upstream -> client: reader кладёт каждый тик в dropping-буфер и сразу
+	// читает следующий, не дожидаясь отправки клиенту; writer в отдельной
+	// горутине забирает самый свежий тик и пишет его, когда освобождается.
 	go func() {
 		defer wg.Done()
 		defer once.Do(closeBoth)
-		pipe(upstreamConn, clientConn)
+		defer toClientBuf.Close()
+		pipeReaderToBuffer(upstreamConn, toClientBuf)
+	}()
+	go func() {
+		defer wg.Done()
+		defer once.Do(closeBoth)
+		bufferWriterToClient(toClientBuf, clientConn)
 	}()
 	go func() {
 		defer wg.Done()
@@ -158,13 +225,47 @@ func pingLoop(conn *wsConn) {
 	}
 }
 
-func pipe(src, dst *wsConn) {
+// pipeSync — синхронный read->write, один цикл на направление. Используется
+// только для client->upstream (input события), где важен каждый месседж и
+// объём трафика низкий (не 30/сек), так что задержка на запись здесь не
+// создаёт наблюдаемую проблему.
+func pipeSync(src, dst *wsConn) {
 	for {
 		msgType, data, err := src.ReadMessage()
 		if err != nil {
 			return
 		}
 		_ = src.SetReadDeadline(time.Now().Add(pongWait))
+		if err := dst.writeMessage(msgType, data); err != nil {
+			return
+		}
+	}
+}
+
+// pipeReaderToBuffer читает от Python (30 тиков/сек) и кладёт каждый в
+// dropping-буфер — НЕ ждёт, пока writer освободится, поэтому медленная сеть
+// до конкретного клиента не задерживает чтение следующего тика.
+func pipeReaderToBuffer(src *wsConn, buf *latestMsg) {
+	for {
+		msgType, data, err := src.ReadMessage()
+		if err != nil {
+			return
+		}
+		_ = src.SetReadDeadline(time.Now().Add(pongWait))
+		buf.Set(msgType, data)
+	}
+}
+
+// bufferWriterToClient забирает самый свежий тик из буфера и пишет клиенту;
+// если запись подвисла (плохая сеть), к моменту её завершения в буфере уже
+// может лежать более новый тик — предыдущие промежуточные дропаются, а не
+// накапливаются в очереди.
+func bufferWriterToClient(buf *latestMsg, dst *wsConn) {
+	for {
+		msgType, data, ok := buf.Wait()
+		if !ok {
+			return
+		}
 		if err := dst.writeMessage(msgType, data); err != nil {
 			return
 		}
